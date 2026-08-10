@@ -3976,7 +3976,7 @@ function MuAdminTab() {
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "erreur proxy");
       setMailSent(prev => ({ ...prev, [selectedDay]: true }));
-      alert("✉️ Récap envoyé à hg@probon.fr");
+      alert("✉️ Récap envoyé à achat@probon.fr");
     } catch(e) {
       alert("Erreur envoi mail : " + e.message);
     } finally {
