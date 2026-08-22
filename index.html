@@ -214,7 +214,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v2.0";
+const APP_VERSION = "v2.1";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDtcoRoknYM4JrJJfcuhpnVMeS-OurwYdU",
@@ -1359,7 +1359,7 @@ function RecapScreen({ sessionId, operator, supplier, products, storeColumns, st
         </div>
         <div className="recap-card">
           <button className="btn-secondary" onClick={onLeave} style={{background:"#1a4d2e", color:"#fff", fontWeight:600}}>← Quitter et revenir à l'accueil</button>
-          <p style={{fontSize:11, color:"#999", margin:"8px 0 0 0", textAlign:"center"}}>Les données restent disponibles dans l'admin (Commande centrale, Avoirs).</p>
+          <p style={{fontSize:11, color:"#999", margin:"8px 0 0 0", textAlign:"center"}}>Les écarts déclarés remontent automatiquement dans l'app Réception admin (Commande à la centrale, Avoirs).</p>
         </div>
       </div>
     </div>
@@ -1541,15 +1541,11 @@ function AdminScreen({ operator, adminEmail, allSessions, onClose, onSessionStar
       <div className="tabs-bar" style={{overflowX:"auto"}}>
         <button className={`tab ${tab==="load"?"active":""}`} onClick={()=>setTab("load")} style={{minWidth:110}}>📥 Chargement</button>
         <button className={`tab ${tab==="sessions"?"active":""}`} onClick={()=>setTab("sessions")} style={{minWidth:100}}>🗂 Sessions</button>
-        <button className={`tab ${tab==="centrale"?"active":""}`} onClick={()=>setTab("centrale")} style={{minWidth:130}}>📋 Commande centrale</button>
-        <button className={`tab ${tab==="avoirs"?"active":""}`} onClick={()=>setTab("avoirs")} style={{minWidth:100}}>💶 Avoirs</button>
         <button className={`tab ${tab==="stats"?"active":""}`} onClick={()=>setTab("stats")} style={{minWidth:80}}>📊 Stats</button>
       </div>
       <div style={{padding:12, paddingBottom:90}}>
         {tab==="load" && <AdminLoad operator={operator} onSessionStart={onSessionStart} onNeedsNaming={onNeedsNaming} />}
         {tab==="sessions" && <AdminSessions allSessions={allSessions} onViewSession={onViewSession} />}
-        {tab==="centrale" && <AdminCentrale allSessions={allSessions} />}
-        {tab==="avoirs" && <AdminAvoirs allSessions={allSessions} />}
         {tab==="stats" && <AdminStats allSessions={allSessions} />}
       </div>
     </div>
@@ -1682,231 +1678,6 @@ function AdminSessionCard({ session, live, onClick, onDelete }) {
       </div>
       <button onClick={e=>{ e.stopPropagation(); onDelete(s); }} style={{marginTop:8, width:"100%", padding:6, fontSize:12, fontWeight:600, background:"#ffebee", color:"#c62828", border:"1px solid #ffcdd2", borderRadius:6}}>🗑 {live?"Annuler cette session":"Supprimer"}</button>
     </div>
-  );
-}
-
-/* ---- Admin : Commande à la centrale (par fournisseur, écarts, .txt) ---- */
-function centraleLinesForSession(s) {
-  const products = s.meta.products || [];
-  const state = s.state || {};
-  const cols = s.meta.storeColumns || [];
-  return products.map((p, idx) => {
-    const pkey = productKey(p, idx);
-    const st = state[pkey] || {};
-    const dispatched = cols.reduce((sum, c) => sum + effQty(st, p, c.code), 0);
-    const commande = p.recue != null ? p.recue : Object.values(p.stores||{}).reduce((a,b)=>a+b,0);
-    return { article:p.article||"", designation:p.designation, colisage:p.colisage||0, commande, dispatched, ecart: dispatched-commande, done:!!st.done, ecarts: st.ecarts||[] };
-  });
-}
-function AdminCentrale({ allSessions }) {
-  const dateKey = todayKey();
-  const sessions = useMemo(() => {
-    const out = [];
-    Object.entries(allSessions||{}).forEach(([sid,s])=>{ if(s&&s.meta&&s.meta.startedAt) out.push({ id:sid, ...s }); });
-    out.sort((a,b)=>(b.meta.startedAt||0)-(a.meta.startedAt||0));
-    return out;
-  }, [allSessions]);
-  const [openId, setOpenId] = useState("");
-
-  const exportTxt = (s) => {
-    const lines = centraleLinesForSession(s);
-    const rows = [];
-    rows.push(`COMMANDE A LA CENTRALE - ${BRAND}`);
-    rows.push(`Fournisseur:\t${s.meta.supplier||"?"}`);
-    rows.push(`Date:\t${new Date(s.meta.startedAt||Date.now()).toLocaleString("fr-FR")}`);
-    rows.push("");
-    rows.push(["Code EAN","Designation","Colisage","Commande","Dispatche","Ecart","Motif(s)"].join("\t"));
-    lines.forEach(l => {
-      const motifs = (l.ecarts||[]).map(e=>`${e.storeLabel||e.store}:${e.reason}${e.reasonText?"("+e.reasonText+")":""}`).join(" | ");
-      rows.push([l.article, l.designation, l.colisage||"", l.commande, l.dispatched, l.ecart, motifs].join("\t"));
-    });
-    const blob = new Blob([rows.join("\r\n")], { type:"text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href=url;
-    a.download = `Commande_centrale_${(s.meta.supplier||"FRS").replace(/[^a-zA-Z0-9]/g,"")}_${dateKey}.txt`;
-    a.click(); setTimeout(()=>URL.revokeObjectURL(url), 1500);
-    // Pousse aussi vers Firebase pour l'app Réception (onglet "Commande à la centrale").
-    if (firebaseReady) {
-      db.ref(`centrale/${dateKey}/${(s.meta.supplier||"FRS").replace(/[^a-zA-Z0-9_]/g,"_")}`).set({
-        supplier: s.meta.supplier||"", startedAt: s.meta.startedAt||Date.now(), exportedAt: Date.now(), lines
-      }).catch(()=>{});
-    }
-  };
-
-  return (
-    <>
-      <p style={{fontSize:12, color:"#666", margin:"4px 0 12px"}}>
-        Vue « À réceptionner à la centrale » — <b>par fournisseur</b> (pas par magasin). Compare la commande passée au fournisseur et ce qui a été réellement dispatché ; les écarts (avec motif) sont exportables en <b>.txt</b> et poussés vers l'app Réception.
-      </p>
-      {sessions.length===0 && <div style={{color:"#999", fontSize:13}}>Aucune commande. Charge un fichier dispatch.</div>}
-      {sessions.map(s => {
-        const lines = centraleLinesForSession(s);
-        const ecartLines = lines.filter(l => l.ecart!==0 || (l.ecarts&&l.ecarts.length));
-        const totalCmd = lines.reduce((a,l)=>a+l.commande,0);
-        const totalDisp = lines.reduce((a,l)=>a+l.dispatched,0);
-        const open = openId===s.id;
-        return (
-          <div className="recap-card" key={s.id}>
-            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer"}} onClick={()=>setOpenId(open?"":s.id)}>
-              <div><h3 style={{margin:0}}>🏭 {s.meta.supplier}</h3><div style={{fontSize:11, color:"#999"}}>{new Date(s.meta.startedAt).toLocaleDateString("fr-FR")} • Cmd {totalCmd} → Disp {totalDisp}</div></div>
-              <div style={{textAlign:"right"}}>{ecartLines.length>0 ? <span className="pill four">{ecartLines.length} écart(s)</span> : <span className="pill int">conforme</span>}<div style={{fontSize:16, color:"#999"}}>{open?"▲":"▼"}</div></div>
-            </div>
-            {open && (
-              <div style={{marginTop:10}}>
-                <button className="btn-primary" onClick={()=>exportTxt(s)} style={{marginBottom:10}}>📄 Générer le .txt (écarts inclus)</button>
-                {lines.map((l,i)=>(
-                  <div key={i} style={{display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 0", borderBottom:"1px solid #f2f2f2", fontSize:12, background:l.ecart!==0?"#fff8f7":"transparent"}}>
-                    <div style={{flex:1}}><div style={{fontWeight:600}}>{l.designation}</div>{l.article && <div style={{fontSize:10, color:"#aaa", fontFamily:"monospace"}}>{l.article}</div>}
-                      {(l.ecarts||[]).map((e,j)=><div key={j} style={{fontSize:10, color:"#c62828"}}>⚠ {e.storeLabel||e.store}: {e.reason}{e.reasonText?` (${e.reasonText})`:""} <span className={`pill ${e.fournisseur?"four":"int"}`}>{e.fournisseur?"avoir":"interne"}</span></div>)}
-                    </div>
-                    <div style={{textAlign:"right", minWidth:100}}>
-                      <span style={{color:"#888"}}>cmd {l.commande}</span> → <b>{l.dispatched}</b>
-                      {l.ecart!==0 && <div style={{color:"#c62828", fontWeight:700}}>{l.ecart>0?`+${l.ecart}`:l.ecart}</div>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
-/* ---- Admin : Gestion des avoirs ---- */
-// Rassemble tous les écarts du jour, groupés par magasin (+ CENTRALE).
-function collectEcarts(allSessions, dateKey) {
-  const items = [];
-  Object.entries(allSessions||{}).forEach(([sid,s])=>{
-    if (!s||!s.meta) return;
-    const supplier = s.meta.supplier||"?";
-    const products = s.meta.products||[];
-    products.forEach((p,idx)=>{
-      const st = (s.state&&s.state[productKey(p,idx)])||{};
-      if (!st.done || !st.ecarts || !st.ecarts.length) return;
-      if (st.doneAt && keyOfTs(st.doneAt)!==dateKey) return;
-      st.ecarts.forEach((e,j)=>{
-        items.push({
-          id: `${sid}__${productKey(p,idx)}__${j}`,
-          sid, supplier, article:p.article||"", designation:p.designation,
-          store: e.store, storeLabel: e.storeLabel||e.store, planned:e.planned, real:e.real, delta:e.delta,
-          reason:e.reason, reasonText:e.reasonText||"", fournisseur:!!e.fournisseur, doneAt:st.doneAt
-        });
-      });
-    });
-  });
-  return items;
-}
-function AdminAvoirs({ allSessions }) {
-  const dateKey = todayKey();
-  const [status, setStatus] = useState({}); // id -> {selected, adjust, archived, reasonOverride}
-  const [avoirDone, setAvoirDone] = useState({}); // supplier -> true (demande envoyée, en attente réception)
-  const items = useMemo(() => collectEcarts(allSessions, dateKey), [allSessions, dateKey]);
-
-  // Persistance légère locale (les décisions d'avoir ne sont pas critiques temps-réel).
-  useEffect(() => { try { const s=JSON.parse(localStorage.getItem("avoirs_"+dateKey)||"{}"); setStatus(s.status||{}); setAvoirDone(s.avoirDone||{}); } catch(e){} }, [dateKey]);
-  useEffect(() => { try { localStorage.setItem("avoirs_"+dateKey, JSON.stringify({status, avoirDone})); } catch(e){} }, [status, avoirDone, dateKey]);
-
-  const setItem = (id, patch) => setStatus(prev => ({ ...prev, [id]: { ...(prev[id]||{}), ...patch } }));
-
-  // Groupé par magasin (label). CENTRALE inclus.
-  const byStore = useMemo(() => {
-    const g = {};
-    items.forEach(it => { const key = it.storeLabel || it.store; if(!g[key]) g[key]=[]; g[key].push(it); });
-    return g;
-  }, [items]);
-  const storeKeys = Object.keys(byStore).sort((a,b)=> a==="CENTRALE"?-1:b==="CENTRALE"?1:a.localeCompare(b));
-
-  const generateAvoirMail = (storeKey) => {
-    const list = byStore[storeKey].filter(it => (status[it.id]||{}).selected);
-    if (list.length===0) { alert("Sélectionne au moins un produit pour la demande d'avoir."); return; }
-    const bySup = {};
-    list.forEach(it => { if(!bySup[it.supplier]) bySup[it.supplier]=[]; bySup[it.supplier].push(it); });
-    const suppliers = Object.keys(bySup).join(", ");
-    let body = `Bonjour,\n\nNous constatons les écarts suivants sur la livraison à la centrale (${storeKey}) et sollicitons un avoir :\n\n`;
-    Object.entries(bySup).forEach(([sup, arr]) => {
-      body += `Fournisseur ${sup} :\n`;
-      arr.forEach(it => {
-        const r = (status[it.id]||{}).reasonOverride || it.reason;
-        body += `  - ${it.designation}${it.article?` (${it.article})`:""} : commandé ${it.planned}, reçu/dispatché ${it.real}, manquant ${Math.abs(it.delta)} — motif : ${r}${it.reasonText?` (${it.reasonText})`:""}\n`;
-      });
-      body += "\n";
-    });
-    body += `Merci de nous établir l'avoir correspondant.\n\nCordialement,\n${BRAND}`;
-    const subject = `Demande d'avoir - ${suppliers} - ${storeKey} - ${new Date().toLocaleDateString("fr-FR")}`;
-    const mailto = `mailto:${AVOIR_MAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    window.open(mailto, "_blank");
-    // Marque la demande comme envoyée (reste affichée jusqu'à "AVOIR REÇU").
-    const upd = {}; list.forEach(it => { upd[it.id] = { ...(status[it.id]||{}), avoirRequested:true }; });
-    setStatus(prev => ({ ...prev, ...upd }));
-  };
-
-  return (
-    <>
-      <p style={{fontSize:12, color:"#666", margin:"4px 0 12px"}}>
-        Écarts déclarés au dispatch (jour {fmtDateKey(dateKey)}), groupés par magasin + <b>CENTRALE</b>. Coche les produits qui nécessitent une <b>demande d'avoir fournisseur</b>, puis « Générer » (ouvre un mail vers {AVOIR_MAIL}). Les produits <b>non cochés</b> passent en rouge « à traiter en interne » (ajustement de stock).
-      </p>
-      {items.length===0 && <div style={{color:"#999", fontSize:13}}>Aucun écart déclaré aujourd'hui.</div>}
-      {storeKeys.map(storeKey => {
-        const list = byStore[storeKey];
-        return (
-          <div className="recap-card" key={storeKey}>
-            <h3>🏬 {storeKey}</h3>
-            {list.map(it => {
-              const st = status[it.id] || {};
-              const archived = st.archived;
-              const selected = st.selected;
-              const treatedInterne = !selected && (st.adjust==="oui" || st.adjust==="non");
-              return (
-                <div key={it.id} className={`anomaly-item ${(!selected && !archived)?"red":""}`} style={{opacity:archived?0.55:1}}>
-                  <div style={{display:"flex", alignItems:"flex-start", gap:8}}>
-                    <input type="checkbox" checked={!!selected} disabled={archived} onChange={e=>setItem(it.id,{selected:e.target.checked})} style={{marginTop:3, width:18, height:18}} />
-                    <div style={{flex:1}}>
-                      <div className="product">{it.designation} <span className="pill four" style={{marginLeft:4}}>{it.supplier}</span> {archived && <span className="pill int">archivé</span>}</div>
-                      <div className="detail">{it.article?`${it.article} · `:""}cmd {it.planned} → {it.real} (manque {Math.abs(it.delta)}) · motif : <b>{it.reason}</b>{it.reasonText?` — ${it.reasonText}`:""}</div>
-                      {selected && (
-                        <div style={{marginTop:6}}>
-                          <label style={{fontSize:11, color:"#888"}}>Motif avoir (modifiable) :</label>
-                          <input type="text" value={st.reasonOverride!==undefined?st.reasonOverride:it.reason} onChange={e=>setItem(it.id,{reasonOverride:e.target.value})} style={{width:"100%", padding:6, fontSize:12, border:"1.5px solid #ddd", borderRadius:6, marginTop:2}} />
-                        </div>
-                      )}
-                      {!selected && !archived && (
-                        <div style={{marginTop:6, fontSize:12}}>
-                          <span style={{color:"#c62828", fontWeight:600}}>À traiter en interne — Ajustement de stock ?</span>
-                          <div style={{display:"flex", gap:6, marginTop:4, alignItems:"center"}}>
-                            <button onClick={()=>setItem(it.id,{adjust:"oui"})} style={{padding:"5px 12px", borderRadius:6, fontWeight:700, fontSize:12, background:st.adjust==="oui"?"#1a4d2e":"#f0f0f0", color:st.adjust==="oui"?"#fff":"#555"}}>Oui</button>
-                            <button onClick={()=>setItem(it.id,{adjust:"non"})} style={{padding:"5px 12px", borderRadius:6, fontWeight:700, fontSize:12, background:st.adjust==="non"?"#1a4d2e":"#f0f0f0", color:st.adjust==="non"?"#fff":"#555"}}>Non</button>
-                            {st.adjust==="oui" && <span style={{color:"#ef6c00", fontWeight:700, fontSize:12}}>→ À traiter (ajustement)</span>}
-                            {treatedInterne && <button onClick={()=>{ if(confirm("Marquer comme traité et archiver ? (annulable)")) setItem(it.id,{archived:true}); }} style={{marginLeft:"auto", padding:"5px 12px", borderRadius:6, fontWeight:700, fontSize:12, background:"#4caf50", color:"#fff"}}>OK</button>}
-                          </div>
-                        </div>
-                      )}
-                      {archived && <button onClick={()=>setItem(it.id,{archived:false})} style={{marginTop:6, padding:"4px 10px", borderRadius:6, fontSize:11, background:"#fff3e0", color:"#e65100", border:"1px solid #ffcc80"}}>↩︎ Annuler l'archivage (erreur de clic)</button>}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            <div style={{display:"flex", gap:8, marginTop:10}}>
-              <button className="btn-primary" style={{flex:1}} onClick={()=>generateAvoirMail(storeKey)}>✉️ Générer la demande d'avoir</button>
-            </div>
-            {list.some(it => (status[it.id]||{}).avoirRequested) && (
-              <div style={{marginTop:10, padding:10, background:"#fff8e1", borderRadius:8, border:"1px solid #ffe082"}}>
-                <div style={{fontSize:12, fontWeight:700, color:"#8d6e00", marginBottom:6}}>📨 Avoir demandé — en attente de réception</div>
-                {list.filter(it=>(status[it.id]||{}).avoirRequested && !(status[it.id]||{}).avoirReceived).map(it=>(
-                  <div key={it.id} style={{display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, padding:"3px 0"}}>
-                    <span>{it.designation} — {it.supplier}</span>
-                    <button onClick={()=>setItem(it.id,{avoirReceived:true, archived:true})} style={{padding:"4px 10px", borderRadius:6, fontSize:11, fontWeight:700, background:"#4caf50", color:"#fff"}}>AVOIR REÇU — archiver</button>
-                  </div>
-                ))}
-                {list.filter(it=>(status[it.id]||{}).avoirRequested && !(status[it.id]||{}).avoirReceived).length===0 && <div style={{fontSize:11, color:"#999"}}>Tous les avoirs de ce magasin ont été reçus.</div>}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </>
   );
 }
 
