@@ -7,22 +7,6 @@
 <script>
 // Repli CDN : si jsDelivr est bloqué/inaccessible, on recharge depuis unpkg (synchrone).
 function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
-
- function launchConfetti(){
-  const c=document.createElement('canvas');
-  c.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:99999';
-  c.width=innerWidth; c.height=innerHeight; document.body.appendChild(c);
-  const ctx=c.getContext('2d'), cols=['#e53935','#1a4d2e','#ff9800','#4caf50','#2196f3','#ffd600','#e91e63'];
-  const burst=(cx,cy)=>Array.from({length:80},()=>({x:cx,y:cy,vx:(Math.random()-.5)*12,vy:(Math.random()-1)*12-3,g:.28,col:cols[(Math.random()*cols.length)|0],s:4+Math.random()*4,life:70+Math.random()*40}));
-  let P=burst(innerWidth*.5,innerHeight*.4);
-  setTimeout(()=>P=P.concat(burst(innerWidth*.25,innerHeight*.45)),250);
-  setTimeout(()=>P=P.concat(burst(innerWidth*.75,innerHeight*.45)),500);
-  let t=0;(function f(){ t++; ctx.clearRect(0,0,c.width,c.height);
-    P.forEach(p=>{ p.vy+=p.g; p.x+=p.vx; p.y+=p.vy; p.life--; ctx.globalAlpha=Math.max(0,p.life/90); ctx.fillStyle=p.col; ctx.fillRect(p.x,p.y,p.s,p.s); });
-    P=P.filter(p=>p.life>0);
-    if(t<180) requestAnimationFrame(f); else c.remove();
-  })();
-}
 </script>
 <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" onerror="__cdnFB('https://unpkg.com/react@18/umd/react.production.min.js')"></script>
 <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" onerror="__cdnFB('https://unpkg.com/react-dom@18/umd/react-dom.production.min.js')"></script>
@@ -104,6 +88,7 @@ function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
   .btn-validate { flex: 1; padding: 12px; font-size: 14px; font-weight: 700; background: #1a4d2e; color: #fff; border-radius: 8px; }
   .btn-validate:active { background: #0d3d20; }
   .btn-edit { padding: 12px 14px; font-size: 14px; background: #f0f0f0; color: #555; border-radius: 8px; }
+  .btn-nonconf { flex:1; padding: 14px 12px; font-size: 14px; font-weight:800; background:#e53935; color:#fff; border-radius:8px; }
   .btn-undo { flex: 1; padding: 10px; font-size: 13px; font-weight: 600; background: #fff; color: #4caf50; border: 1.5px solid #4caf50; border-radius: 8px; }
   .lock-badge { background: #ffb300; color: #fff; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 10px; display: inline-block; margin-bottom: 6px; }
   .done-badge { background: #4caf50; color: #fff; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 10px; display: inline-block; margin-bottom: 6px; }
@@ -930,6 +915,23 @@ function PaletteDetailScreen({ storeCode, allSessions, adminEmail, onClose }) {
 /* =========================================================================
    CARTE PRODUIT (dispatch)
    ========================================================================= */
+function launchConfetti(){
+  try{
+    const c=document.createElement('canvas');
+    c.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:99999';
+    c.width=innerWidth; c.height=innerHeight; document.body.appendChild(c);
+    const ctx=c.getContext('2d'), cols=['#e53935','#1a4d2e','#ff9800','#4caf50','#2196f3','#ffd600','#e91e63'];
+    const burst=(cx,cy)=>Array.from({length:80},()=>({x:cx,y:cy,vx:(Math.random()-.5)*12,vy:(Math.random()-1)*12-3,g:.28,col:cols[(Math.random()*cols.length)|0],s:4+Math.random()*4,life:70+Math.random()*40}));
+    let P=burst(innerWidth*.5,innerHeight*.4);
+    setTimeout(()=>P=P.concat(burst(innerWidth*.25,innerHeight*.45)),250);
+    setTimeout(()=>P=P.concat(burst(innerWidth*.75,innerHeight*.45)),500);
+    let t=0;(function f(){ t++; ctx.clearRect(0,0,c.width,c.height);
+      P.forEach(p=>{ p.vy+=p.g; p.x+=p.vx; p.y+=p.vy; p.life--; ctx.globalAlpha=Math.max(0,p.life/90); ctx.fillStyle=p.col; ctx.fillRect(p.x,p.y,p.s,p.s); });
+      P=P.filter(p=>p.life>0);
+      if(t<180) requestAnimationFrame(f); else c.remove();
+    })();
+  }catch(e){}
+}
 function ProductCard({ product, pkey, status, operator, storeColumns, onLock, onUnlock, onValidate, onUndo, onEdit }) {
   const isLocked = status.lockedBy && status.lockedBy !== operator;
   const lockExpired = status.lockedAt && (Date.now()-status.lockedAt) > LOCK_DURATION_MS;
@@ -987,7 +989,7 @@ function ProductCard({ product, pkey, status, operator, storeColumns, onLock, on
       {!isDone && !reallyLocked && (
         <div className="actions-row">
           <button className="btn-validate" onClick={()=>onValidate(pkey, { qtyStores:effectiveQtyStores, qtyRecue:recue })}>✓ Dispatché</button>
-          <button className="btn-edit" onClick={()=>onEdit(pkey, false)}>✎</button>
+          <button className="btn-nonconf" onClick={()=>onEdit(pkey, false)}>⚠ Non conforme</button>
         </div>
       )}
       {isDone && <div className="actions-row"><button className="btn-undo" onClick={()=>onUndo(pkey)}>Annuler</button></div>}
@@ -1247,7 +1249,7 @@ function DispatchScreen({ sessionId, operator, supplier, products, storeColumns,
 
       <div className="bottom-bar">
         <div className="stats"><span>Avancement: <b>{stats.done}/{stats.total}</b></span><span>{stats.total>0?Math.round((stats.done/stats.total)*100):0}%</span></div>
-        <button className="btn-finish" onClick={()=>onFinish(state, sortedProducts)} disabled={stats.done===0}>{stats.done===stats.total?"✓ Terminer et voir le récap":`Voir le récap (${stats.done} validés)`}</button>
+        <button className="btn-finish" onClick={()=>{ if(stats.done===stats.total) launchConfetti(); onFinish(state, sortedProducts); }} disabled={stats.done===0}>{stats.done===stats.total?"✓ Terminer et voir le récap":`Voir le récap (${stats.done} validés)`}</button>
       </div>
 
       {editingProduct && (
