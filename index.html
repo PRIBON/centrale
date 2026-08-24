@@ -7,6 +7,22 @@
 <script>
 // Repli CDN : si jsDelivr est bloqué/inaccessible, on recharge depuis unpkg (synchrone).
 function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
+
+ function launchConfetti(){
+  const c=document.createElement('canvas');
+  c.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:99999';
+  c.width=innerWidth; c.height=innerHeight; document.body.appendChild(c);
+  const ctx=c.getContext('2d'), cols=['#e53935','#1a4d2e','#ff9800','#4caf50','#2196f3','#ffd600','#e91e63'];
+  const burst=(cx,cy)=>Array.from({length:80},()=>({x:cx,y:cy,vx:(Math.random()-.5)*12,vy:(Math.random()-1)*12-3,g:.28,col:cols[(Math.random()*cols.length)|0],s:4+Math.random()*4,life:70+Math.random()*40}));
+  let P=burst(innerWidth*.5,innerHeight*.4);
+  setTimeout(()=>P=P.concat(burst(innerWidth*.25,innerHeight*.45)),250);
+  setTimeout(()=>P=P.concat(burst(innerWidth*.75,innerHeight*.45)),500);
+  let t=0;(function f(){ t++; ctx.clearRect(0,0,c.width,c.height);
+    P.forEach(p=>{ p.vy+=p.g; p.x+=p.vx; p.y+=p.vy; p.life--; ctx.globalAlpha=Math.max(0,p.life/90); ctx.fillStyle=p.col; ctx.fillRect(p.x,p.y,p.s,p.s); });
+    P=P.filter(p=>p.life>0);
+    if(t<180) requestAnimationFrame(f); else c.remove();
+  })();
+}
 </script>
 <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" onerror="__cdnFB('https://unpkg.com/react@18/umd/react.production.min.js')"></script>
 <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" onerror="__cdnFB('https://unpkg.com/react-dom@18/umd/react-dom.production.min.js')"></script>
