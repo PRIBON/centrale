@@ -215,7 +215,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v2.1";
+const APP_VERSION = "v2.2";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDtcoRoknYM4JrJJfcuhpnVMeS-OurwYdU",
@@ -1570,12 +1570,17 @@ function AdminScreen({ operator, adminEmail, allSessions, onClose, onSessionStar
   );
 }
 
-/* ---- Admin : Chargement (dispatch + BDC colisage optionnel) ---- */
+/* ---- Admin : Chargement (dispatch + BDC colisage optionnel) ----
+   Le fichier dispatch est d'abord PRÉPARÉ (lu et vérifié) sans partir.
+   On peut ensuite charger le BDC (colisage) optionnel dans n'importe quel ordre,
+   puis cliquer « Envoyer le dispatch » pour le lancer réellement (+ feux d'artifice). */
 function AdminLoad({ operator, onSessionStart, onNeedsNaming }) {
   const [supplierName, setSupplierName] = useState("");
   const [error, setError] = useState("");
   const [bdcMap, setBdcMap] = useState(null); // {byArticle,byName,count}
   const [bdcInfo, setBdcInfo] = useState("");
+  const [pending, setPending] = useState(null); // { supplier, products(bruts), storeColumns, fileName }
+  const [sent, setSent] = useState(false);
   const fileRef = useRef(null);
   const bdcRef = useRef(null);
 
@@ -1587,46 +1592,76 @@ function AdminLoad({ operator, onSessionStart, onNeedsNaming }) {
       const wb = XLSX.read(buf, { type:"array" });
       const map = parseBdcColisage(wb);
       if (map.count===0) { setBdcInfo("⚠️ Aucun colisage détecté dans ce BDC (colonne colisage/conditionnement manquante). Le dispatch fonctionnera sans."); setBdcMap(null); }
-      else { setBdcMap(map); setBdcInfo(`✓ BDC chargé : ${map.count} colisages détectés. Ils seront appliqués au dispatch.`); }
+      else { setBdcMap(map); setBdcInfo(`✓ BDC chargé : ${map.count} colisages détectés. Ils seront appliqués à l'envoi du dispatch.`); }
     } catch(e) { setBdcInfo(`Erreur BDC : ${e.message}`); setBdcMap(null); }
   };
 
+  // Lit et PRÉPARE le fichier dispatch (ne l'envoie pas encore).
   const processFile = async (file) => {
     setError("");
+    if (!file) return;
     if (!supplierName.trim()) { setError("Indique d'abord le nom du fournisseur."); return; }
     try {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type:"array" });
       let { products, storeColumns } = parseExcelFile(wb);
       if (products.length===0) { setError("Aucun produit trouvé dans le fichier."); return; }
-      if (bdcMap) products = applyColisage(products, bdcMap);
-      const supplier = supplierName.trim();
-      if (storeColumns.some(s=>s.needsNaming)) { onNeedsNaming({ supplier, products, storeColumns }); return; }
-      const sessionId = `${stripAccents(supplier).replace(/[^a-zA-Z0-9]/g,"_").toLowerCase()}_${Date.now()}`;
-      onSessionStart(sessionId, supplier, products, storeColumns);
-    } catch(e) { setError(`Erreur de lecture: ${e.message}`); }
+      setPending({ supplier: supplierName.trim(), products, storeColumns, fileName: file.name||"dispatch" });
+    } catch(e) { setError(`Erreur de lecture: ${e.message}`); setPending(null); }
   };
+
+  // Envoi RÉEL du dispatch : applique le colisage, lance les feux d'artifice, démarre la session.
+  const sendDispatch = () => {
+    if (!pending) { setError("Charge d'abord le fichier dispatch."); return; }
+    const supplier = (supplierName.trim() || pending.supplier);
+    let products = pending.products;
+    if (bdcMap) products = applyColisage(products, bdcMap);
+    setSent(true);
+    launchConfetti();
+    if (pending.storeColumns.some(s=>s.needsNaming)) { onNeedsNaming({ supplier, products, storeColumns: pending.storeColumns }); return; }
+    const sessionId = `${stripAccents(supplier).replace(/[^a-zA-Z0-9]/g,"_").toLowerCase()}_${Date.now()}`;
+    onSessionStart(sessionId, supplier, products, pending.storeColumns);
+  };
+
+  const resetPending = () => { setPending(null); setSent(false); setError(""); if(fileRef.current) fileRef.current.value=""; };
+
+  const nbStores = pending ? pending.storeColumns.length : 0;
+  const totalUnits = pending ? pending.products.reduce((a,p)=>a+Object.values(p.stores||{}).reduce((x,y)=>x+(y||0),0),0) : 0;
 
   return (
     <>
       <div className="recap-card">
-        <h3>📥 Démarrer un dispatch</h3>
+        <h3>📥 Préparer un dispatch</h3>
         <div className="field">
           <label>Nom du fournisseur *</label>
-          <input type="text" value={supplierName} onChange={e=>{ setSupplierName(e.target.value); setError(""); }} placeholder="Ex: SBV, GABORIT, VIN…" style={{textTransform:"uppercase"}} />
+          <input type="text" value={supplierName} onChange={e=>{ setSupplierName(e.target.value); setError(""); }} placeholder="Ex: SBV, GABORIT, VIN…" style={{textTransform:"uppercase"}} disabled={!!pending} />
         </div>
-        <div className="upload-zone" onClick={()=>{ if(!supplierName.trim()){ setError("⚠️ Saisis d'abord le nom du fournisseur"); return; } fileRef.current&&fileRef.current.click(); }} style={{opacity:supplierName.trim()?1:0.5}}>
-          <div className="icon">📄</div>
-          <div className="label">Charger le fichier dispatch (Excel)</div>
-          <div className="hint">.xlsx ou .xls — la commande répartie par magasin</div>
-        </div>
+        {!pending && (
+          <>
+            <div className="upload-zone" onClick={()=>{ if(!supplierName.trim()){ setError("⚠️ Saisis d'abord le nom du fournisseur"); return; } fileRef.current&&fileRef.current.click(); }} style={{opacity:supplierName.trim()?1:0.5}}>
+              <div className="icon">📄</div>
+              <div className="label">Charger le fichier dispatch (Excel)</div>
+              <div className="hint">.xlsx ou .xls — la commande répartie par magasin</div>
+            </div>
+            <p style={{fontSize:12, color:"#666", margin:"10px 0 0 0"}}>Le dispatch <b>ne part pas</b> tout de suite : tu pourras charger le bon de commande (colisage) ci-dessous, puis cliquer <b>Envoyer le dispatch</b>.</p>
+          </>
+        )}
         <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={e=>processFile(e.target.files[0])} />
+        {pending && (
+          <div style={{background:"#e8f5e9", border:"1.5px solid #a5d6a7", borderRadius:8, padding:12, marginTop:4}}>
+            <div style={{fontWeight:700, color:"#1a4d2e"}}>✓ Fichier prêt : {pending.fileName}</div>
+            <div style={{fontSize:13, color:"#333", marginTop:4}}>Fournisseur : <b>{supplierName.trim()||pending.supplier}</b></div>
+            <div style={{fontSize:13, color:"#333"}}>{pending.products.length} produit(s) · {nbStores} magasin(s) · {totalUnits} unité(s) au total</div>
+            <div style={{fontSize:12, color:"#666", marginTop:4}}>{bdcMap ? `📦 Colisage BDC prêt (${bdcMap.count} réf.) — appliqué à l'envoi.` : "Colisage BDC : aucun (optionnel)."}</div>
+            <button className="btn-secondary" onClick={resetPending} style={{marginTop:8, fontSize:13}}>↺ Changer de fichier</button>
+          </div>
+        )}
         {error && <div style={{color:"#d32f2f", fontSize:13, marginTop:12}}>{error}</div>}
       </div>
 
       <div className="recap-card">
         <h3>📦 Bon de commande (colisage) — optionnel</h3>
-        <p style={{fontSize:12, color:"#666", margin:"0 0 10px 0"}}>Charge le BDC fournisseur <b>avant</b> le fichier dispatch pour connaître le colisage (ex. C6 = 6 unités). L'app calcule alors les cartons par magasin. Si pas de BDC, pas grave.</p>
+        <p style={{fontSize:12, color:"#666", margin:"0 0 10px 0"}}>Charge le BDC fournisseur pour connaître le colisage (ex. C6 = 6 unités) — <b>avant ou après</b> le fichier dispatch, peu importe. L'app calcule alors les cartons par magasin. Sans BDC, pas grave.</p>
         <div className="upload-zone bdc" onClick={()=>bdcRef.current&&bdcRef.current.click()}>
           <div className="icon">🧾</div>
           <div className="label">Charger le BDC (Excel)</div>
@@ -1634,6 +1669,15 @@ function AdminLoad({ operator, onSessionStart, onNeedsNaming }) {
         </div>
         <input ref={bdcRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={e=>handleBdc(e.target.files[0])} />
         {bdcInfo && <div style={{fontSize:12, marginTop:10, color:bdcMap?"#2e7d32":"#bf6000", background:bdcMap?"#e8f5e9":"#fff3e0", padding:8, borderRadius:6}}>{bdcInfo}</div>}
+      </div>
+
+      <div className="recap-card" style={{border:"1.5px solid #1a4d2e"}}>
+        <h3>🚀 Envoyer le dispatch</h3>
+        <p style={{fontSize:12, color:"#666", margin:"0 0 10px 0"}}>Quand tout est prêt, clique pour lancer le dispatch. Il devient visible par les préparateurs et les palettes commencent à se remplir.</p>
+        <button className="btn-primary" onClick={sendDispatch} disabled={!pending || sent} style={{background: (!pending||sent)?"#aaa":"#ef6c00", fontSize:17}}>
+          {sent ? "🎉 Dispatch envoyé !" : "🚀 Envoyer le dispatch"}
+        </button>
+        {!pending && <p className="admin-note" style={{marginTop:8}}>Charge d'abord le fichier dispatch ci-dessus.</p>}
       </div>
     </>
   );
