@@ -215,7 +215,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v2.2";
+const APP_VERSION = "v2.3";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDtcoRoknYM4JrJJfcuhpnVMeS-OurwYdU",
@@ -564,6 +564,19 @@ function applyColisage(products, map) {
     if (!c) { const d = stripAccents((p.designation||"").toLowerCase().trim()); if (map.byName[d]) c = map.byName[d]; }
     return c>1 ? { ...p, colisage:c } : p;
   });
+}
+// Idem, mais renvoie aussi un décompte (utile pour l'application rétroactive sur une session déjà envoyée).
+function applyColisageWithCount(products, map) {
+  let applied = 0, already = 0, missing = 0;
+  const out = (products||[]).map(p => {
+    if (p.colisage && p.colisage>1) { already++; return p; }
+    let c = 0;
+    if (p.article && map.byArticle[p.article]) c = map.byArticle[p.article];
+    if (!c) { const d = stripAccents((p.designation||"").toLowerCase().trim()); if (map.byName[d]) c = map.byName[d]; }
+    if (c>1) { applied++; return { ...p, colisage:c }; }
+    missing++; return p;
+  });
+  return { products: out, applied, already, missing };
 }
 
 /* =========================================================================
@@ -1562,7 +1575,7 @@ function AdminScreen({ operator, adminEmail, allSessions, onClose, onSessionStar
         <button className={`tab ${tab==="stats"?"active":""}`} onClick={()=>setTab("stats")} style={{minWidth:80}}>📊 Stats</button>
       </div>
       <div style={{padding:12, paddingBottom:90}}>
-        {tab==="load" && <AdminLoad operator={operator} onSessionStart={onSessionStart} onNeedsNaming={onNeedsNaming} />}
+        {tab==="load" && <AdminLoad operator={operator} allSessions={allSessions} onSessionStart={onSessionStart} onNeedsNaming={onNeedsNaming} />}
         {tab==="sessions" && <AdminSessions allSessions={allSessions} onViewSession={onViewSession} />}
         {tab==="stats" && <AdminStats allSessions={allSessions} />}
       </div>
@@ -1574,7 +1587,7 @@ function AdminScreen({ operator, adminEmail, allSessions, onClose, onSessionStar
    Le fichier dispatch est d'abord PRÉPARÉ (lu et vérifié) sans partir.
    On peut ensuite charger le BDC (colisage) optionnel dans n'importe quel ordre,
    puis cliquer « Envoyer le dispatch » pour le lancer réellement (+ feux d'artifice). */
-function AdminLoad({ operator, onSessionStart, onNeedsNaming }) {
+function AdminLoad({ operator, allSessions, onSessionStart, onNeedsNaming }) {
   const [supplierName, setSupplierName] = useState("");
   const [error, setError] = useState("");
   const [bdcMap, setBdcMap] = useState(null); // {byArticle,byName,count}
@@ -1679,7 +1692,106 @@ function AdminLoad({ operator, onSessionStart, onNeedsNaming }) {
         </button>
         {!pending && <p className="admin-note" style={{marginTop:8}}>Charge d'abord le fichier dispatch ci-dessus.</p>}
       </div>
+
+      <RetroColisage allSessions={allSessions} />
     </>
+  );
+}
+
+/* ---- Admin : colisage rétroactif (BDC pour une session DÉJÀ envoyée) ----
+   Quand on a oublié de charger le BDC avant d'envoyer le dispatch, on peut
+   ici choisir la session envoyée, charger son BDC, et l'app renseigne le
+   colisage des produits → les palettes fictives affichent alors les
+   colis/cartons estimés (sans avoir à relancer la session). */
+function RetroColisage({ allSessions }) {
+  const [selectedSid, setSelectedSid] = useState("");
+  const [bdcMap, setBdcMap] = useState(null);
+  const [info, setInfo] = useState("");
+  const [ok, setOk] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const bdcRef = useRef(null);
+
+  // Sessions envoyées (meta existante), plus récentes d'abord, avec couverture colisage.
+  const sessions = useMemo(() => {
+    const out = [];
+    Object.entries(allSessions||{}).forEach(([sid, s]) => {
+      if (!s || !s.meta || !s.meta.startedAt) return;
+      const products = s.meta.products || [];
+      const withCol = products.filter(p=>p.colisage && p.colisage>1).length;
+      out.push({ sid, supplier:s.meta.supplier||"?", startedAt:s.meta.startedAt, total:products.length, withCol });
+    });
+    out.sort((a,b)=>(b.startedAt||0)-(a.startedAt||0));
+    return out;
+  }, [allSessions]);
+
+  const selected = sessions.find(s=>s.sid===selectedSid) || null;
+
+  const labelOf = (s) => {
+    const d = s.startedAt ? new Date(s.startedAt) : null;
+    const dstr = d ? d.toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit"})+" "+d.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}) : "";
+    const cov = s.total>0 ? `${s.withCol}/${s.total} colisés` : "vide";
+    return `${s.supplier} — ${dstr} · ${cov}`;
+  };
+
+  const handleBdc = async (file) => {
+    if (!file) return;
+    setInfo(""); setOk(false);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type:"array" });
+      const map = parseBdcColisage(wb);
+      if (map.count===0) { setBdcMap(null); setInfo("⚠️ Aucun colisage détecté dans ce BDC (colonne colisage/conditionnement manquante)."); }
+      else { setBdcMap(map); setInfo(`✓ BDC lu : ${map.count} colisage(s) détecté(s). Choisis la session puis applique.`); }
+    } catch(e) { setBdcMap(null); setInfo("Erreur BDC : "+e.message); }
+    if (bdcRef.current) bdcRef.current.value="";
+  };
+
+  const apply = () => {
+    if (!bdcMap) { setInfo("Charge d'abord un BDC."); return; }
+    if (!selected) { setInfo("Choisis une session."); return; }
+    const s = allSessions[selectedSid];
+    const products = (s && s.meta && s.meta.products) || [];
+    const res = applyColisageWithCount(products, bdcMap);
+    if (res.applied===0) {
+      setInfo(`Aucun colisage n'a pu être associé (${res.already} déjà renseigné(s), ${res.missing} sans correspondance). Vérifie que le BDC correspond bien à ce fournisseur.`);
+      return;
+    }
+    if (!firebaseReady) { setInfo("Firebase indisponible — impossible d'enregistrer."); return; }
+    setBusy(true);
+    db.ref(`dispatch/${selectedSid}/meta/products`).set(res.products)
+      .then(()=>{ setBusy(false); setOk(true); launchConfetti(); setInfo(`✓ ${res.applied} colisage(s) appliqué(s) à « ${selected.supplier} »${res.missing>0?` (${res.missing} sans correspondance)`:""}. Les palettes fictives sont mises à jour.`); })
+      .catch(e=>{ setBusy(false); setInfo("Erreur d'enregistrement : "+e.message); });
+  };
+
+  return (
+    <div className="recap-card" style={{border:"1.5px solid #5e35b1"}}>
+      <h3 style={{color:"#5e35b1"}}>🧾 Colisage oublié ? — session déjà envoyée</h3>
+      <p style={{fontSize:12, color:"#666", margin:"0 0 12px 0"}}>Si le dispatch est déjà parti <b>sans BDC</b>, choisis la session, charge son bon de commande, et les palettes fictives afficheront le nombre de colis / cartons estimés. Pas besoin de relancer la session.</p>
+
+      <div className="field">
+        <label>Session envoyée</label>
+        <select value={selectedSid} onChange={e=>{ setSelectedSid(e.target.value); setOk(false); }}>
+          <option value="">— Choisir un dispatch —</option>
+          {sessions.map(s=><option key={s.sid} value={s.sid}>{labelOf(s)}</option>)}
+        </select>
+      </div>
+      {sessions.length===0 && <div style={{fontSize:12, color:"#999", marginBottom:8}}>Aucun dispatch envoyé pour l'instant.</div>}
+      {selected && selected.withCol===selected.total && selected.total>0 && (
+        <div style={{fontSize:12, color:"#2e7d32", background:"#e8f5e9", padding:8, borderRadius:6, marginBottom:8}}>Cette session a déjà un colisage complet sur tous ses produits.</div>
+      )}
+
+      <div className="upload-zone bdc" onClick={()=>bdcRef.current&&bdcRef.current.click()} style={{opacity:selectedSid?1:0.5}}>
+        <div className="icon">📦</div>
+        <div className="label">Charger le BDC de cette session (Excel)</div>
+        <div className="hint">colonne colisage / conditionnement</div>
+      </div>
+      <input ref={bdcRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={e=>handleBdc(e.target.files[0])} />
+
+      <button className="btn-primary" onClick={apply} disabled={!bdcMap || !selected || busy || ok} style={{marginTop:12, background:(!bdcMap||!selected||busy||ok)?"#aaa":"#5e35b1"}}>
+        {ok ? "✓ Colisage appliqué" : (busy ? "Enregistrement…" : "Appliquer le colisage à cette session")}
+      </button>
+      {info && <div style={{fontSize:12, marginTop:10, color:ok?"#2e7d32":(bdcMap?"#5e35b1":"#bf6000"), background:ok?"#e8f5e9":(bdcMap?"#f3effa":"#fff3e0"), padding:8, borderRadius:6}}>{info}</div>}
+    </div>
   );
 }
 
