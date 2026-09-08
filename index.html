@@ -215,7 +215,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v2.3";
+const APP_VERSION = "v2.4";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDtcoRoknYM4JrJJfcuhpnVMeS-OurwYdU",
@@ -296,6 +296,23 @@ const smartMatch = (haystack, query) => {
   });
 };
 const isBarcode = (q) => /^\d{5,}$/.test((q||"").trim());
+
+// Correspondance code-barres tolérante : ne garde que les chiffres (le champ
+// "article" peut contenir espaces/tirets/points), gère les zéros de tête
+// (EAN-13 vs code interne) et compare dans les deux sens.
+const digitsOnly = (s) => (s||"").toString().replace(/\D/g,"");
+const trimZeros = (s) => s.replace(/^0+/,"") || s;
+const barcodeMatch = (article, code) => {
+  const a = digitsOnly(article), q = digitsOnly(code);
+  if (!a || !q) return false;
+  if (a === q) return true;
+  if (a.includes(q)) return true;                     // le code scanné figure dans le champ article
+  const az = trimZeros(a), qz = trimZeros(q);
+  if (az === qz) return true;                         // tolérance zéros de tête
+  if (az.includes(qz) && qz.length >= 8) return true; // code long contenu (EAN)
+  if (qz.includes(az) && az.length >= 8) return true;
+  return false;
+};
 
 const productKey = (p, idx) => {
   const code = (p.article||"").toString().trim();
@@ -1162,7 +1179,7 @@ function DispatchScreen({ sessionId, operator, supplier, products, storeColumns,
     const source = showDone ? doneProducts : notDoneProducts;
     const q = search.trim();
     if (!q) return source;
-    if (isBarcode(q)) return source.filter(p => (p.article||"").replace(/\s/g,"").includes(q));
+    if (isBarcode(q)) return source.filter(p => barcodeMatch(p.article, q));
     return source.filter(p => smartMatch(p.designation, q) || (p.article||"").includes(q));
   }, [notDoneProducts, doneProducts, showDone, search]);
 
