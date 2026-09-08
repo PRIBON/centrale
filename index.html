@@ -14,6 +14,8 @@ function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+<!-- Scanner caméra (lecture code-barres EAN via la caméra du téléphone) -->
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" onerror="__cdnFB('https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js')"></script>
 <!-- Firebase (compat builds) -->
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
@@ -215,7 +217,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v2.4";
+const APP_VERSION = "v2.5";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDtcoRoknYM4JrJJfcuhpnVMeS-OurwYdU",
@@ -1141,6 +1143,54 @@ function EditModal({ product, status, storeColumns, onSave, onClose, allowReceiv
 /* =========================================================================
    ÉCRAN DISPATCH
    ========================================================================= */
+/* =========================================================================
+   SCANNER CAMÉRA — lecture code-barres via la caméra (html5-qrcode)
+   ========================================================================= */
+function CameraScanner({ onDetect, onClose }) {
+  const [error, setError] = useState("");
+  const [ready, setReady] = useState(false);
+  const scannerRef = useRef(null);
+  const stoppedRef = useRef(false);
+  const divId = "cam-reader";
+  useEffect(() => {
+    if (typeof Html5Qrcode === "undefined") {
+      setError("Le module scanner n'a pas pu se charger (réseau ou bloqueur). Réessaie ou utilise la douchette.");
+      return;
+    }
+    const scanner = new Html5Qrcode(divId, { verbose:false });
+    scannerRef.current = scanner;
+    const config = { fps: 12, qrbox: { width: 260, height: 150 }, aspectRatio: 1.3 };
+    const onSuccess = (decodedText) => {
+      if (stoppedRef.current) return;
+      stoppedRef.current = true;
+      try { navigator.vibrate && navigator.vibrate(70); } catch(e){}
+      const finish = () => onDetect((decodedText||"").trim());
+      try { scanner.stop().then(finish).catch(finish); } catch(e){ finish(); }
+    };
+    scanner.start({ facingMode: "environment" }, config, onSuccess, () => {})
+      .then(() => setReady(true))
+      .catch(() => {
+        setError("Impossible d'ouvrir la caméra. Autorise l'accès caméra pour ce site (et vérifie qu'il est bien en HTTPS).");
+      });
+    return () => {
+      stoppedRef.current = true;
+      const s = scannerRef.current;
+      if (s) { try { s.stop().then(()=>{ try{s.clear();}catch(e){} }).catch(()=>{}); } catch(e){} }
+    };
+  }, []);
+  return (
+    <div className="modal-backdrop" style={{background:"rgba(0,0,0,.9)", flexDirection:"column", padding:16}}>
+      <div style={{color:"#fff", fontWeight:700, fontSize:16, marginBottom:12}}>📷 Scanne le code-barres</div>
+      <div style={{width:"100%", maxWidth:420, borderRadius:12, overflow:"hidden", background:"#000"}}>
+        <div id={divId} style={{width:"100%"}}></div>
+      </div>
+      {!ready && !error && <div style={{color:"#ddd", fontSize:13, marginTop:12}}>Ouverture de la caméra…</div>}
+      {error && <div style={{color:"#ffcdd2", fontSize:13, marginTop:12, textAlign:"center", maxWidth:360}}>{error}</div>}
+      <button onClick={onClose} style={{marginTop:18, background:"#fff", color:"#1a1a1a", padding:"12px 28px", borderRadius:10, fontWeight:700, fontSize:15}}>Fermer</button>
+    </div>
+  );
+}
+
 function DispatchScreen({ sessionId, operator, supplier, products, storeColumns, onFinish, onLeave }) {
   const { state, meta, connected, lockRow, unlockRow, validateRow, undoRow } = useFirebaseSession(sessionId, operator);
   const [search, setSearch] = useState("");
@@ -1149,7 +1199,9 @@ function DispatchScreen({ sessionId, operator, supplier, products, storeColumns,
   const [toast, setToast] = useState("");
   const [viewMode, setViewMode] = useState(localStorage.getItem("dispatch_view_mode")||"list");
   const [showDone, setShowDone] = useState(false);
+  const [showCam, setShowCam] = useState(false);
   const searchInputRef = useRef(null);
+  const onCamDetect = (code) => { setShowCam(false); setSearch(code); setTimeout(()=>searchInputRef.current&&searchInputRef.current.focus(),80); };
 
   const effectiveStoreColumns = useMemo(() => {
     if (meta && Array.isArray(meta.storeColumns) && meta.storeColumns.length>0) return meta.storeColumns;
@@ -1237,6 +1289,7 @@ function DispatchScreen({ sessionId, operator, supplier, products, storeColumns,
             <input ref={searchInputRef} className="scan-search-input" type="text" placeholder="Scanne le code-barres ou tape le nom…" value={search} onChange={e=>setSearch(e.target.value)} autoFocus />
             {search && <button className="scan-clear" onClick={()=>{ setSearch(""); searchInputRef.current&&searchInputRef.current.focus(); }}>✕</button>}
           </div>
+          <button onClick={()=>setShowCam(true)} style={{width:"100%", padding:14, fontSize:16, fontWeight:800, background:"#1a4d2e", color:"#fff", borderRadius:12, marginBottom:16, display:"flex", alignItems:"center", justifyContent:"center", gap:8}}>📷 Scanner avec la caméra</button>
           {!search.trim() && (
             <div className="scan-hint">
               <div style={{fontSize:40, marginBottom:8}}>⚡</div>
@@ -1285,6 +1338,7 @@ function DispatchScreen({ sessionId, operator, supplier, products, storeColumns,
       {editingProduct && (
         <EditModal product={editingProduct} status={state[editingKey]||{}} storeColumns={effectiveStoreColumns} allowReceivedEdit={editAllowReceived} onSave={handleEditSave} onClose={handleEditCancel} />
       )}
+      {showCam && <CameraScanner onDetect={onCamDetect} onClose={()=>setShowCam(false)} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
