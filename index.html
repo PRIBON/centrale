@@ -243,6 +243,11 @@ function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
   .piece-log .pl .pd { font-weight:700; }
   .piece-log .pl .pd.kbg { color:#1565c0; }
   .piece-log .pl .pd.rob { color:#6a1b9a; }
+  /* Bannière messages (broadcasts entrepôt) */
+  .bcast-wrap { position:fixed; left:0; right:0; bottom:0; z-index:9998; display:flex; flex-direction:column; gap:1px; }
+  .bcast { background:#1a4d2e; color:#fff; padding:10px 14px; display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:14px; box-shadow:0 -2px 8px rgba(0,0,0,.15); }
+  .bcast span { flex:1; }
+  .bcast button { background:rgba(255,255,255,.2); color:#fff; border:none; border-radius:6px; padding:4px 10px; font-weight:800; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -272,7 +277,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v3.2";
+const APP_VERSION = "v3.4";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -503,6 +508,27 @@ async function verifyCentraleCode(code, moduleKey) {
 }
 // Nom affichable d'un opérateur à partir de son code + nom résolu.
 const operatorDisplay = (code, name) => (name && name.trim()) ? name.trim() : ("Code " + code);
+
+// Bannière de messages envoyés par la console (nœud "broadcasts" du projet CENTRALE).
+// Rendu hors-React (injection DOM) pour être visible sur tous les écrans.
+let __lastBcast = {};
+function renderBroadcastBanner(data){
+  __lastBcast = data || {};
+  const now = Date.now();
+  let seen = []; try { seen = JSON.parse(localStorage.getItem("centrale_bcast_seen")||"[]"); } catch(e){}
+  const list = Object.entries(__lastBcast).map(([id,b])=>({id,...b}))
+    .filter(b => (!b.validUntil || b.validUntil>=now) && seen.indexOf(b.id)===-1)
+    .sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  let el = document.getElementById("centrale-bcast");
+  if(!list.length){ if(el) el.remove(); return; }
+  if(!el){ el=document.createElement("div"); el.id="centrale-bcast"; el.className="bcast-wrap"; document.body.appendChild(el); }
+  const esch = (s)=>String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  el.innerHTML = list.map(b=>`<div class="bcast"><span>📢 ${esch(b.message)}</span><button onclick="centraleDismissBcast('${b.id}')">✕ OK</button></div>`).join("");
+}
+window.centraleDismissBcast = function(id){
+  try { const s=JSON.parse(localStorage.getItem("centrale_bcast_seen")||"[]"); if(s.indexOf(id)===-1){ s.push(id); localStorage.setItem("centrale_bcast_seen", JSON.stringify(s)); } } catch(e){}
+  renderBroadcastBanner(__lastBcast);
+};
 
 /* =========================================================================
    EXCEL PARSING (fromage) — détecte désignation + colonnes ROB / KBG + poids
@@ -1048,7 +1074,7 @@ function CodeLoginScreen({ moduleLabel, moduleKey, onLogin, onBack }) {
 /* =========================================================================
    ACCUEIL — rejoindre un dispatch + palettes fictives
    ========================================================================= */
-function HomeScreen({ operator, allSessions, adminEmail, onJoinSession, onOpenPalette, onBack }) {
+function HomeScreen({ operator, allSessions, adminEmail, onJoinSession, onOpenPalette, onBack, onLogout }) {
   const dateKey = todayKey();
   const closes = usePalettesCloses(dateKey);
 
@@ -1137,6 +1163,7 @@ function HomeScreen({ operator, allSessions, adminEmail, onJoinSession, onOpenPa
 
       <div style={{padding:"0 16px 40px", maxWidth:420, margin:"0 auto"}}>
         <button className="btn-secondary" onClick={onBack} style={{fontSize:14, color:"#666"}}>← Retour au menu</button>
+        {onLogout && <button className="btn-secondary" onClick={onLogout} style={{fontSize:13, color:"#c62828", borderColor:"#ffcdd2"}}>↪ Se déconnecter ({operator})</button>}
         {!firebaseReady && <div className="admin-note">⚠️ Firebase non disponible — mode local uniquement.</div>}
       </div>
     </div>
@@ -2366,7 +2393,7 @@ function ArtAdmin() {
     </svg>
   );
 }
-function ModuleSelect({ onPick, onResetCache }) {
+function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
   return (
     <div className="land">
       <div className="land-logo">{BRAND}</div>
@@ -2389,6 +2416,8 @@ function ModuleSelect({ onPick, onResetCache }) {
         </div>
       </div>
       <div className="land-foot">
+        {operator && <span style={{fontSize:13, color:"#555", alignSelf:"center"}}>Connecté : <b>{operator.name||("Code "+operator.code)}</b></span>}
+        {operator && onLogout && <button onClick={onLogout} style={{color:"#c62828"}}>↪ Se déconnecter</button>}
         <button onClick={onResetCache}>🔄 Réinitialiser (cache)</button>
         {!firebaseReady && <span className="admin-note">⚠️ Firebase non disponible — mode local.</span>}
       </div>
@@ -2399,7 +2428,7 @@ function ModuleSelect({ onPick, onResetCache }) {
 /* =========================================================================
    DÉCOUPE FROMAGE — accueil (rejoindre une session)
    ========================================================================= */
-function DecoupeHome({ operator, allDecoupe, adminEmail, onJoin, onOpenAdmin, onBack }) {
+function DecoupeHome({ operator, allDecoupe, onJoin, onBack, onLogout }) {
   const active = useMemo(() => {
     const out = [];
     Object.entries(allDecoupe||{}).forEach(([sid,s]) => {
@@ -2432,7 +2461,7 @@ function DecoupeHome({ operator, allDecoupe, adminEmail, onJoin, onOpenAdmin, on
           ))}
         </div>
         <div style={{padding:"0 4px"}}>
-          <button className="btn-secondary" onClick={onOpenAdmin} style={{background:"#8a5a00", color:"#fff", fontWeight:700, padding:14}}>🖥️ Ouvrir la console (chargement)</button>
+          <button className="btn-secondary" onClick={onLogout} style={{fontSize:13, color:"#c62828", borderColor:"#ffcdd2"}}>↪ Se déconnecter ({operator.name||("Code "+operator.code)})</button>
         </div>
       </div>
     </div>
@@ -2531,6 +2560,57 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved }) {
 }
 
 /* =========================================================================
+   DÉCOUPE FROMAGE — Réception : photo du BL + vérification reçu/non conforme
+   ========================================================================= */
+function ReceptionPanel({ sessionId, operator, products, state, onSetRow, bls }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const fileRef = useRef(null);
+  const onBL = async (file) => {
+    if (!file) return; setBusy(true); setMsg("");
+    try {
+      const b64 = await fileToBase64(file);
+      const res = await uploadTracabilite({ base64:b64, filename:file.name||"BL.jpg", magasin:"BL", nom:"BL", lot:"", dlc:"", operatorCode:operator.code });
+      if (firebaseReady && sessionId) { const ref = db.ref(`decoupe/${sessionId}/bl`).push(); await ref.set({ url:res.url||"", at:Date.now(), by:operator.name||("#"+operator.code) }).catch(()=>{}); }
+      setMsg(res.ok ? "✓ BL enregistré (Drive)" : "⚠️ BL non envoyé au Drive (serveur) — réessaie.");
+    } catch(e){ setMsg("Photo illisible."); }
+    setBusy(false); if (fileRef.current) fileRef.current.value="";
+    setTimeout(()=>setMsg(""), 3000);
+  };
+  const list = products;
+  const nb = { ok:0, nc:0, todo:0 };
+  list.forEach(p=>{ const r=(state[p._pkey]||{}).reception; if(r==="ok") nb.ok++; else if(r==="nonconf") nb.nc++; else nb.todo++; });
+  const blList = Object.values(bls||{}).sort((a,b)=>(b.at||0)-(a.at||0));
+  return (
+    <div style={{padding:12, paddingBottom:110}}>
+      <div className="recap-card">
+        <h3>📄 Bon de livraison</h3>
+        <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Si le BL n'a pas été chargé par la console, photographie-le ici (archivé au Drive). Puis vérifie ci-dessous que tout a bien été reçu.</p>
+        <div className="upload-zone" onClick={()=>fileRef.current&&fileRef.current.click()}>
+          <div className="icon">📷</div><div className="label">Photographier le BL</div><div className="hint">.jpg / .png</div>
+        </div>
+        <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>onBL(e.target.files[0])} />
+        {msg && <div style={{fontSize:12, marginTop:10, padding:8, borderRadius:6, background:msg[0]==="✓"?"#e8f5e9":"#fff3e0", color:msg[0]==="✓"?"#2e7d32":"#bf6000"}}>{msg}</div>}
+        {blList.length>0 && <div style={{marginTop:8, fontSize:12, color:"#555"}}>{blList.length} photo(s) de BL · {blList.filter(b=>b.url).map((b,i)=><a key={i} href={b.url} target="_blank" rel="noreferrer" style={{marginRight:8}}>📷</a>)}</div>}
+      </div>
+      <div className="recap-card">
+        <h3>✅ Vérification réception ({nb.ok} reçus · {nb.nc} non conf. · {nb.todo} à faire)</h3>
+        {list.map(p=>{
+          const r=(state[p._pkey]||{}).reception;
+          return (
+            <div key={p._pkey} style={{display:"flex", gap:8, alignItems:"center", padding:"8px 0", borderBottom:"1px solid #f0f0f0"}}>
+              <div style={{flex:1, fontSize:14, fontWeight:600}}>{p.designation}{p.robCmd||p.kbgTarget?<span style={{color:"#888", fontWeight:400}}> · cmd {p.robCmd||p.kbgTarget}</span>:null}</div>
+              <button onClick={()=>onSetRow(p._pkey,{reception:"ok"})} style={{padding:"8px 10px", borderRadius:8, fontWeight:700, fontSize:13, background:r==="ok"?"#2e7d32":"#eef2f7", color:r==="ok"?"#fff":"#333"}}>✓ Reçu</button>
+              <button onClick={()=>onSetRow(p._pkey,{reception:"nonconf"})} style={{padding:"8px 10px", borderRadius:8, fontWeight:700, fontSize:13, background:r==="nonconf"?"#c62828":"#eef2f7", color:r==="nonconf"?"#fff":"#333"}}>⚠ Non conf.</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
    DÉCOUPE FROMAGE — écran de pesée d'un fromage
    ========================================================================= */
 function CheeseWeigh({ product, pkey, status, operator, connected, onSetRow, onClose }) {
@@ -2623,13 +2703,20 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
   const { state, meta, connected, setRow } = useDecoupeSession(sessionId, operator);
   const [search, setSearch] = useState("");
   const [cutKey, setCutKey] = useState(null);
-  const [tab, setTab] = useState("cut"); // cut | traca
+  const [tab, setTab] = useState("cut"); // cut | reception | traca
   const [labels, setLabels] = useState({});
+  const [bls, setBls] = useState({});
 
   useEffect(() => {
     if (!firebaseReady || !sessionId) return;
     const ref = db.ref(`decoupe/${sessionId}/tracabilite`);
     const h = (snap)=>setLabels(snap.val()||{});
+    ref.on("value", h); return () => ref.off("value", h);
+  }, [sessionId]);
+  useEffect(() => {
+    if (!firebaseReady || !sessionId) return;
+    const ref = db.ref(`decoupe/${sessionId}/bl`);
+    const h = (snap)=>setBls(snap.val()||{});
     ref.on("value", h); return () => ref.off("value", h);
   }, [sessionId]);
 
@@ -2659,11 +2746,15 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
 
       <div className="tabs-bar">
         <button className={`tab ${tab==="cut"?"active":""}`} onClick={()=>setTab("cut")}>🔪 Découpe</button>
+        <button className={`tab ${tab==="reception"?"active":""}`} onClick={()=>setTab("reception")}>📥 Réception</button>
         <button className={`tab ${tab==="traca"?"active":""}`} onClick={()=>setTab("traca")}>🏷️ Traçabilité</button>
       </div>
 
       {tab==="traca" && (
         <TracabilitePanel sessionId={sessionId} operator={operator} products={products} labels={labels} />
+      )}
+      {tab==="reception" && (
+        <ReceptionPanel sessionId={sessionId} operator={operator} products={list} state={state} onSetRow={setRow} bls={bls} />
       )}
 
       {tab==="cut" && (
@@ -2680,12 +2771,7 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
               const mag = st.magasin || defMag;
               return (
                 <div className={`cheese-card ${isDone?"done":""}`} key={p._pkey}>
-                  <div className="cc-name">{p.designation}{isDone && <span className="done-badge" style={{marginLeft:8}}>✓ {st.doneBy}</span>}</div>
-                  {/* Réception */}
-                  <div style={{display:"flex", gap:6, marginBottom:8}}>
-                    <button onClick={()=>setRow(p._pkey,{reception:"ok"})} style={{flex:1, padding:9, borderRadius:8, fontWeight:700, fontSize:13, background:rec==="ok"?"#2e7d32":"#eef2f7", color:rec==="ok"?"#fff":"#333"}}>✓ Reçu OK</button>
-                    <button onClick={()=>setRow(p._pkey,{reception:"nonconf"})} style={{flex:1, padding:9, borderRadius:8, fontWeight:700, fontSize:13, background:rec==="nonconf"?"#c62828":"#eef2f7", color:rec==="nonconf"?"#fff":"#333"}}>⚠ Non conforme</button>
-                  </div>
+                  <div className="cc-name">{p.designation}{isDone && <span className="done-badge" style={{marginLeft:8}}>✓ {st.doneBy}</span>}{rec==="ok"&&<span className="badge" style={{marginLeft:6, background:"#e8f5e9", color:"#2e7d32", fontSize:11, padding:"2px 7px", borderRadius:9}}>reçu</span>}{rec==="nonconf"&&<span className="badge" style={{marginLeft:6, background:"#fdecea", color:"#c62828", fontSize:11, padding:"2px 7px", borderRadius:9}}>non conf.</span>}</div>
                   <div className="cc-tar">
                     <div className="tgt kbg"><span className="big">{agg.kbgN}{p.kbgTarget>0?`/${p.kbgTarget}`:""}</span>Kelbongoo · {p.poids}g (±{p.tol}%)</div>
                     <div className="tgt rob"><span className="big">{agg.robN}</span>Robespierre{p.robCmd>0?` · cmd ${p.robCmd}`:""}</div>
@@ -2952,7 +3038,14 @@ function App() {
     }
     return { code:c, name: localStorage.getItem("centrale_op_name")||"" };
   });
-  const [adminEmail, setAdminEmail] = useState(localStorage.getItem("centrale_admin_email")||"");
+  // Plus de connexion admin dans l'app : l'identité = uniquement le code opérateur.
+  // On purge l'ancienne clé qui provoquait une "connexion" fantôme (ex. hg@probon.fr).
+  const adminEmail = "";
+  useEffect(() => { try { localStorage.removeItem("centrale_admin_email"); } catch(e){} }, []);
+  const logout = () => {
+    ["centrale_op_code","centrale_op_name","centrale_op_at"].forEach(k=>{ try{ localStorage.removeItem(k); }catch(e){} });
+    setOperator(null); setModule(null);
+  };
 
   // ----- État module DISPATCH -----
   const [sessionId, setSessionId] = useState(localStorage.getItem("dispatch_sessionId")||"");
@@ -2991,9 +3084,15 @@ function App() {
     };
     const t = setInterval(check, 30*1000); return () => clearInterval(t);
   }, [operator]);
+  // Messages entrepôt (broadcasts poussés par la console) -> bannière.
+  useEffect(() => {
+    if (!firebaseReady) return;
+    const ref = db.ref("broadcasts"); const h = (snap)=>renderBroadcastBanner(snap.val()||{});
+    ref.on("value", h); return () => ref.off("value", h);
+  }, []);
 
   // Chaîne d'affichage de l'opérateur (les composants dispatch attendent une chaîne).
-  const opObj = operator || { code:"", name: adminEmail || "Admin" };
+  const opObj = operator || { code:"", name:"Opérateur" };
   const opName = operatorDisplay(opObj.code||"", opObj.name||"");
 
   useEffect(() => {
@@ -3042,37 +3141,36 @@ function App() {
     setSessionId(""); setSupplier(""); setProducts([]); setStoreColumns([]); setRecapData(null); setDView("home");
     setTimeout(()=>window.location.reload(), 100);
   };
-  const onAdminSuccess = (email) => { setAdminEmail(email); localStorage.setItem("centrale_admin_email", email); setModule("admin"); setAdminView("screen"); };
   const pickModule = (m) => {
     if (m==="reception") { try { window.open(RECEPTION_URL, "_blank"); } catch(e){ location.href = RECEPTION_URL; } return; }
     setModule(m);
   };
 
   // ===== LANDING =====
-  if (module===null) return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} />;
+  if (module===null) return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} operator={operator} onLogout={logout} />;
 
   // ===== ADMIN = accès à la CONSOLE DE CHARGEMENT (gestion) =====
   if (module==="admin") return <AdminConsoleScreen onBack={()=>setModule(null)} />;
 
   // ===== DISPATCH PALETTE =====
   if (module==="dispatch") {
-    if (!operator && !adminEmail) return <CodeLoginScreen moduleLabel="Dispatch palette" moduleKey="dispatch" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
+    if (!operator) return <CodeLoginScreen moduleLabel="Dispatch palette" moduleKey="dispatch" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
     if (dView==="naming" && namingData) return <NamingScreen supplier={namingData.supplier} products={namingData.products} storeColumns={namingData.storeColumns} onConfirm={handleNamingConfirm} onCancel={()=>{ setNamingData(null); setDView("home"); }} />;
-    if (dView==="palette" && paletteStore) return <PaletteDetailScreen storeCode={paletteStore} allSessions={allSessions} adminEmail={adminEmail} onClose={()=>{ setPaletteStore(null); setDView("home"); }} />;
+    if (dView==="palette" && paletteStore) return <PaletteDetailScreen storeCode={paletteStore} allSessions={allSessions} adminEmail={true} onClose={()=>{ setPaletteStore(null); setDView("home"); }} />;
     if (dView==="recap" && recapData) return <RecapScreen sessionId={sessionId} operator={opName} supplier={supplier} products={recapData.products} storeColumns={storeColumns} state={recapData.state} onClose={()=>setDView("dispatch")} onLeave={handleLeaveSession} />;
     if (dView==="dispatch" && sessionId && products.length>0) return <DispatchScreen sessionId={sessionId} operator={opName} supplier={supplier} products={products} storeColumns={storeColumns} onFinish={handleFinish} onLeave={handleLeaveSession} />;
-    return <HomeScreen operator={opName} allSessions={allSessions} adminEmail={adminEmail} onJoinSession={handleJoinSession} onOpenPalette={(code)=>{ setPaletteStore(code); setDView("palette"); }} onBack={()=>setModule(null)} />;
+    return <HomeScreen operator={opName} allSessions={allSessions} adminEmail={false} onJoinSession={handleJoinSession} onOpenPalette={(code)=>{ setPaletteStore(code); setDView("palette"); }} onBack={()=>setModule(null)} onLogout={logout} />;
   }
 
   // ===== DÉCOUPE FROMAGE =====
   if (module==="decoupe") {
-    if (!operator && !adminEmail) return <CodeLoginScreen moduleLabel="Découpe fromage" moduleKey="decoupe" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
+    if (!operator) return <CodeLoginScreen moduleLabel="Découpe fromage" moduleKey="decoupe" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
     if (decView==="recap" && decRecapData) return <DecoupeRecap sessionId={decSessionId} operator={opObj} supplier={decSupplier} products={decRecapData.products} state={decRecapData.state} onClose={()=>setDecView("decoupe")} onLeave={handleDecoupeLeave} />;
     if (decView==="decoupe" && decSessionId && decProducts.length>0) return <DecoupeScreen sessionId={decSessionId} operator={opObj} supplier={decSupplier} products={decProducts} onFinish={handleDecoupeFinish} onLeave={handleDecoupeLeave} />;
-    return <DecoupeHome operator={opObj} allDecoupe={allDecoupe} adminEmail={adminEmail} onJoin={handleDecoupeJoin} onOpenAdmin={()=>setModule("admin")} onBack={()=>setModule(null)} />;
+    return <DecoupeHome operator={opObj} allDecoupe={allDecoupe} onJoin={handleDecoupeJoin} onBack={()=>setModule(null)} onLogout={logout} />;
   }
 
-  return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} />;
+  return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} operator={operator} onLogout={logout} />;
 }
 
 try {
