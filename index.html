@@ -277,7 +277,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v3.4";
+const APP_VERSION = "v3.6";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -493,9 +493,11 @@ async function verifyCentraleCode(code, moduleKey) {
   const clean = (code||"").toString().trim();
   if (!/^\d{3,8}$/.test(clean)) return { valid:false, reason:"format" };
   try {
+    // Accès aux modules NON conditionné aux colonnes DISPATCH PALETTE / DECOUPE FROMAGE :
+    // on vérifie seulement que le code existe et est actif (pas de moduleColumn envoyée).
     const r = await fetch(CODE_VERIFY_URL, {
       method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
-      body:JSON.stringify({ action:"verify-code", code:clean, scope:"CENTRALE", module:moduleKey||"", moduleColumn:MODULE_COLUMN[moduleKey]||"" })
+      body:JSON.stringify({ action:"verify-code", code:clean, scope:"CENTRALE" })
     });
     const j = await r.json();
     if (j && typeof j.valid === "boolean") return { valid:j.valid, name:(j.name||j.prenom||"").trim(), reason:j.reason||"", server:true };
@@ -2736,7 +2738,7 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
       <div className="header fr-head" style={{background:"#8a5a00"}}>
         <div className="header-row">
           <div><h1>🧀 {supplier||"Découpe"}</h1>
-            <div className="sub">{BRAND} • {operator.name||("Code "+operator.code)} • <span className={`conn-status ${!connected?"offline":""}`}>{connected?"● en ligne":"● hors ligne"}</span></div>
+            <div className="sub">{BRAND} • {operator.name||("Code "+operator.code)}{meta&&meta.deliveryDate?` • récep. prévue ${meta.deliveryDate}`:""} • <span className={`conn-status ${!connected?"offline":""}`}>{connected?"● en ligne":"● hors ligne"}</span></div>
           </div>
           <div className="header-actions"><button className="header-btn" onClick={onLeave}>Quitter</button></div>
         </div>
