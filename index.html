@@ -277,7 +277,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v3.7";
+const APP_VERSION = "v3.9";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -328,7 +328,7 @@ const TRACA_ROOT_FOLDER = "Traçabilité fromage";
 // Best-effort : en cas d'échec on garde quand même la saisie dans Firebase.
 async function uploadTracabilite({ base64, filename, magasin, nom, lot, dlc, operatorCode }) {
   try {
-    const r = await fetch(APPS_SCRIPT_URL, {
+    const r = await fetch(CODE_VERIFY_URL, {
       method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
       body:JSON.stringify({ action:"upload-tracabilite", folder:TRACA_ROOT_FOLDER, magasin, nom, lot, dlc, filename, base64, operatorCode })
     });
@@ -521,8 +521,10 @@ function renderBroadcastBanner(data){
   __lastBcast = data || {};
   const now = Date.now();
   let seen = []; try { seen = JSON.parse(localStorage.getItem("centrale_bcast_seen")||"[]"); } catch(e){}
+  const mod = window.__centraleModule || null; // module courant (dispatch|decoupe|null)
   const list = Object.entries(__lastBcast).map(([id,b])=>({id,...b}))
     .filter(b => (!b.validUntil || b.validUntil>=now) && seen.indexOf(b.id)===-1)
+    .filter(b => { const t=b.target||"all"; return t==="all" || !mod || t===mod; })
     .sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
   let el = document.getElementById("centrale-bcast");
   if(!list.length){ if(el) el.remove(); return; }
@@ -2434,6 +2436,14 @@ function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
    DÉCOUPE FROMAGE — accueil (rejoindre une session)
    ========================================================================= */
 function DecoupeHome({ operator, allDecoupe, onJoin, onBack, onLogout }) {
+  const [view, setView] = useState("home"); // home | traca
+  const [labels, setLabels] = useState({});
+  useEffect(() => {
+    if (!firebaseReady) return;
+    const ref = db.ref(`tracabilite/${todayKey()}`);
+    const h = (snap)=>setLabels(snap.val()||{});
+    ref.on("value", h); return () => ref.off("value", h);
+  }, []);
   const active = useMemo(() => {
     const out = [];
     Object.entries(allDecoupe||{}).forEach(([sid,s]) => {
@@ -2446,6 +2456,21 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onBack, onLogout }) {
     out.sort((a,b)=>b.startedAt-a.startedAt);
     return out;
   }, [allDecoupe]);
+
+  if (view==="traca") {
+    return (
+      <div className="app">
+        <div className="header fr-head" style={{background:"#8a5a00"}}>
+          <div className="header-row">
+            <div><h1>🏷️ Traçabilité</h1><div className="sub">{BRAND} • {operator.name||("Code "+operator.code)}</div></div>
+            <div className="header-actions"><button className="header-btn" onClick={()=>setView("home")}>← Retour</button></div>
+          </div>
+        </div>
+        <TracabilitePanel sessionId={null} operator={operator} products={[]} labels={labels} />
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <div className="header fr-head" style={{background:"#8a5a00"}}>
@@ -2455,9 +2480,15 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onBack, onLogout }) {
         </div>
       </div>
       <div style={{padding:12, paddingBottom:40}}>
+        {/* Traçabilité accessible dès l'accueil (photo étiquette + lot + DLC + magasin -> Drive) */}
+        <div className="recap-card" style={{border:"1.5px solid #8a5a00"}}>
+          <h3>🏷️ Traçabilité des fromages</h3>
+          <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Avant de découper : prends en photo l'étiquette de chaque fromage (n° de lot, DLC) et indique le magasin. Archivé au Drive Pribon.</p>
+          <button className="btn-cut" onClick={()=>setView("traca")}>🏷️ Ouvrir la traçabilité</button>
+        </div>
         <div className="recap-card">
           <h3>🧀 Rejoindre une découpe en cours</h3>
-          {active.length===0 && <div style={{fontSize:13, color:"#888", padding:"6px 0"}}>Aucune découpe en cours. Un administrateur doit charger le fichier de découpe (Admin → Découpe fromage).</div>}
+          {active.length===0 && <div style={{fontSize:13, color:"#888", padding:"6px 0"}}>Aucune découpe en cours. L'admin charge le BL / la découpe dans la console.</div>}
           {active.map(s => (
             <button key={s.id} className="btn-secondary" style={{textAlign:"left", padding:14, marginTop:6}} onClick={()=>onJoin(s.id)}>
               <div style={{fontWeight:700, marginBottom:2}}>{s.supplier||"Découpe"}</div>
@@ -2514,7 +2545,8 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved }) {
       if (!res.ok) setMsg("⚠️ Photo non envoyée au Drive (serveur) — saisie conservée. " + (res.error||""));
     }
     const entry = { nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), magasin, photoUrl:url, at:Date.now(), by:operator.name||("#"+operator.code) };
-    if (firebaseReady && sessionId) { const ref = db.ref(`decoupe/${sessionId}/tracabilite`).push(); await ref.set(entry).catch(()=>{}); }
+    const tracaPath = sessionId ? `decoupe/${sessionId}/tracabilite` : `tracabilite/${todayKey()}`;
+    if (firebaseReady) { const ref = db.ref(tracaPath).push(); await ref.set(entry).catch(()=>{}); }
     onSaved && onSaved(entry);
     setBusy(false); setNom(""); setLot(""); setDlc(""); setPhoto(null); if (fileRef.current) fileRef.current.value="";
     if (!msg) setMsg("✓ Étiquette enregistrée" + (url?" (Drive)":""));
@@ -3095,6 +3127,8 @@ function App() {
     const ref = db.ref("broadcasts"); const h = (snap)=>renderBroadcastBanner(snap.val()||{});
     ref.on("value", h); return () => ref.off("value", h);
   }, []);
+  // Suit le module courant pour filtrer la bannière (dispatch / découpe).
+  useEffect(() => { window.__centraleModule = module; renderBroadcastBanner(__lastBcast); }, [module]);
 
   // Chaîne d'affichage de l'opérateur (les composants dispatch attendent une chaîne).
   const opObj = operator || { code:"", name:"Opérateur" };
