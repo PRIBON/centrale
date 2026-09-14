@@ -277,7 +277,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v3.6";
+const APP_VERSION = "v3.7";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -493,11 +493,14 @@ async function verifyCentraleCode(code, moduleKey) {
   const clean = (code||"").toString().trim();
   if (!/^\d{3,8}$/.test(clean)) return { valid:false, reason:"format" };
   try {
-    // Accès aux modules NON conditionné aux colonnes DISPATCH PALETTE / DECOUPE FROMAGE :
-    // on vérifie seulement que le code existe et est actif (pas de moduleColumn envoyée).
+    // MÊME mécanisme que les apps magasin (réception / kelbongoo) : on envoie storeCode =
+    // le nom de la colonne du registre à vérifier. Ici la colonne = le module
+    // ("DISPATCH PALETTE" / "DECOUPE FROMAGE"). Le serveur déjà déployé coche cette colonne.
+    // (moduleColumn est envoyé en plus, au cas où le serveur utilise ce nom.)
+    const col = MODULE_COLUMN[moduleKey] || "";
     const r = await fetch(CODE_VERIFY_URL, {
       method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
-      body:JSON.stringify({ action:"verify-code", code:clean, scope:"CENTRALE" })
+      body:JSON.stringify({ action:"verify-code", code:clean, scope:"CENTRALE", storeCode:col, moduleColumn:col, module:moduleKey||"" })
     });
     const j = await r.json();
     if (j && typeof j.valid === "boolean") return { valid:j.valid, name:(j.name||j.prenom||"").trim(), reason:j.reason||"", server:true };
