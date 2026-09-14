@@ -272,7 +272,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v3.0";
+const APP_VERSION = "v3.2";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -280,6 +280,26 @@ const CONSOLE_URL = "https://pribon.github.io/admin/chargement.html";
 // URL de l'app Réception (magasin / PDP) — ouverte depuis la tuile Réception.
 // ⚠️ À ajuster selon le déploiement réel.
 const RECEPTION_URL = "https://pribon.github.io/admin/reception.html";
+// Apps Script CENTRAL (Réception) qui détient le Sheet des codes salariés + verify-code.
+// C'est le même déploiement que la console (chargement.html).
+const CODE_VERIFY_URL = "https://script.google.com/macros/s/AKfycbzSMWziEuPvxY6UvM6FimJlFCTE1v9u1mWh3gJXbOtMVlHcb478_gASeIwZ1PMEw7-2Sw/exec";
+// Durée de validité d'une connexion par code (au-delà : reconnexion obligatoire).
+const CODE_SESSION_TTL_MS = 60 * 60 * 1000; // 1 h
+
+// Forçage de mise à jour : compare APP_VERSION à la version renvoyée par le serveur
+// (action "get-centrale-version" côté Apps Script). Si plus récente -> recharge avec
+// cache-bust (?v=…). Le garde-fou évite toute boucle si le fichier déployé n'est pas encore à jour.
+function versGT(a, b){ const pa=String(a).replace(/^v/,"").split(".").map(n=>parseInt(n,10)||0), pb=String(b).replace(/^v/,"").split(".").map(n=>parseInt(n,10)||0); for(let i=0;i<Math.max(pa.length,pb.length);i++){ const x=pa[i]||0,y=pb[i]||0; if(y>x) return true; if(y<x) return false; } return false; }
+function centraleCheckVersion(){
+  fetch(CODE_VERIFY_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"get-centrale-version" }) })
+    .then(r=>r.json()).then(j=>{
+      const latest = j && j.version; if(!latest) return;
+      if(versGT(APP_VERSION, latest)){
+        try { const u=new URL(location.href); if(u.searchParams.get("v")!==String(latest)){ u.searchParams.set("v", String(latest)); location.replace(u.toString()); } }
+        catch(e){ location.reload(); }
+      }
+    }).catch(()=>{});
+}
 
 // Découpe fromage : poids de pièce cible Kelbongoo (g) + tolérance (%).
 const FROMAGE_DEFAULT_POIDS = 200;   // grammes
@@ -461,16 +481,19 @@ const storeLong = (code, label) => STORE_LONG[code] || label || code;
    Repli tolérant : si le serveur ne répond pas / n'implémente pas l'action,
    on n'empêche pas l'entrepôt de travailler (le code sert d'identifiant).
    ========================================================================= */
-async function verifyCentraleCode(code) {
+// moduleKey = "dispatch" | "decoupe" -> le serveur vérifie la colonne correspondante
+// du Sheet des codes ("DISPATCH PALETTE" / "DECOUPE FROMAGE").
+const MODULE_COLUMN = { dispatch:"DISPATCH PALETTE", decoupe:"DECOUPE FROMAGE" };
+async function verifyCentraleCode(code, moduleKey) {
   const clean = (code||"").toString().trim();
   if (!/^\d{3,8}$/.test(clean)) return { valid:false, reason:"format" };
   try {
-    const r = await fetch(APPS_SCRIPT_URL, {
+    const r = await fetch(CODE_VERIFY_URL, {
       method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
-      body:JSON.stringify({ action:"verify-code", code:clean, storeCode:"CENTRALE", scope:"CENTRALE" })
+      body:JSON.stringify({ action:"verify-code", code:clean, scope:"CENTRALE", module:moduleKey||"", moduleColumn:MODULE_COLUMN[moduleKey]||"" })
     });
     const j = await r.json();
-    if (j && typeof j.valid === "boolean") return { valid:j.valid, name:(j.name||j.prenom||"").trim(), server:true };
+    if (j && typeof j.valid === "boolean") return { valid:j.valid, name:(j.name||j.prenom||"").trim(), reason:j.reason||"", server:true };
     // Réponse inattendue -> repli
     return { valid:true, name:"", server:false, degraded:true };
   } catch(e) {
@@ -979,7 +1002,7 @@ function frAgg(status) {
 /* =========================================================================
    LOGIN PAR CODE  (remplace la saisie du prénom)
    ========================================================================= */
-function CodeLoginScreen({ moduleLabel, onLogin, onBack }) {
+function CodeLoginScreen({ moduleLabel, moduleKey, onLogin, onBack }) {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -987,11 +1010,12 @@ function CodeLoginScreen({ moduleLabel, onLogin, onBack }) {
     const c = code.trim();
     if (!/^\d{3,8}$/.test(c)) { setError("Entre ton code (3 à 8 chiffres)."); return; }
     setBusy(true); setError("");
-    const res = await verifyCentraleCode(c);
+    const res = await verifyCentraleCode(c, moduleKey);
     setBusy(false);
-    if (!res.valid) { setError("Code non reconnu. Vérifie auprès du gérant."); return; }
+    if (!res.valid) { setError(res.reason==="module" ? "Ton code n'a pas accès à ce module." : "Code non reconnu. Vérifie auprès du gérant."); return; }
     const name = res.name || "";
     localStorage.setItem("centrale_op_code", c);
+    localStorage.setItem("centrale_op_at", String(Date.now()));
     if (name) localStorage.setItem("centrale_op_name", name);
     onLogin({ code:c, name });
   };
@@ -2408,7 +2432,7 @@ function DecoupeHome({ operator, allDecoupe, adminEmail, onJoin, onOpenAdmin, on
           ))}
         </div>
         <div style={{padding:"0 4px"}}>
-          <button className="btn-secondary" onClick={onOpenAdmin} style={{background:"#8a5a00", color:"#fff", fontWeight:700, padding:14}}>🔐 Admin — charger une découpe</button>
+          <button className="btn-secondary" onClick={onOpenAdmin} style={{background:"#8a5a00", color:"#fff", fontWeight:700, padding:14}}>🖥️ Ouvrir la console (chargement)</button>
         </div>
       </div>
     </div>
@@ -2864,6 +2888,54 @@ function AdminLoadFromage({ onSessionStart }) {
 }
 
 /* =========================================================================
+   ADMIN — accès à la console de chargement (gestion de toutes les apps)
+   ========================================================================= */
+function AdminConsoleScreen({ onBack }) {
+  const [url, setUrl] = useState(localStorage.getItem("centrale_console_url") || CONSOLE_URL);
+  const [edit, setEdit] = useState(false);
+  const [draft, setDraft] = useState(url);
+  const save = () => { const u=draft.trim(); if(!u) return; localStorage.setItem("centrale_console_url", u); setUrl(u); setEdit(false); };
+  return (
+    <div className="app">
+      <div className="header" style={{background:"#5e35b1"}}>
+        <div className="header-row">
+          <div><h1>🖥️ Admin — Console</h1><div className="sub">{BRAND} • gestion & chargement</div></div>
+          <div className="header-actions"><button className="header-btn" onClick={onBack}>← Menu</button></div>
+        </div>
+      </div>
+      <div style={{padding:16, maxWidth:480, margin:"0 auto"}}>
+        <div className="recap-card">
+          <h3>Console de chargement</h3>
+          <p style={{fontSize:13, color:"#555", lineHeight:1.5, margin:"0 0 14px"}}>
+            Toute la gestion se fait dans la console : chargement des <b>dispatch</b> et des <b>découpes</b>,
+            suivi live, écarts, historique, avoirs et messages. Connexion responsable (Google).
+          </p>
+          <a href={url} target="_blank" rel="noreferrer"
+             style={{display:"block", textAlign:"center", padding:16, background:"#5e35b1", color:"#fff", borderRadius:10, fontWeight:800, fontSize:16, textDecoration:"none"}}>
+            Ouvrir la console de chargement ↗
+          </a>
+          {!edit ? (
+            <div style={{marginTop:12, fontSize:12, color:"#888", wordBreak:"break-all"}}>
+              {url} · <button onClick={()=>{ setDraft(url); setEdit(true); }} style={{background:"none", color:"#5e35b1", fontWeight:700, padding:0}}>modifier</button>
+            </div>
+          ) : (
+            <div style={{marginTop:12}}>
+              <label style={{fontSize:12, fontWeight:700, color:"#666"}}>URL de la console</label>
+              <input type="text" value={draft} onChange={e=>setDraft(e.target.value)} style={{width:"100%", padding:10, border:"1.5px solid #ddd", borderRadius:8, fontSize:13, marginTop:4}} placeholder="https://…/chargement.html" />
+              <div style={{display:"flex", gap:8, marginTop:8}}>
+                <button className="btn-secondary" style={{flex:1}} onClick={()=>setEdit(false)}>Annuler</button>
+                <button className="btn-primary" style={{flex:1}} onClick={save}>Enregistrer</button>
+              </div>
+            </div>
+          )}
+        </div>
+        <button className="btn-secondary" onClick={onBack} style={{color:"#666"}}>← Retour au menu</button>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
    APP ROOT
    ========================================================================= */
 function App() {
@@ -2872,7 +2944,12 @@ function App() {
   // Opérateur (login par code) — partagé entre modules, persistant.
   const [operator, setOperator] = useState(() => {
     const c = localStorage.getItem("centrale_op_code")||"";
+    const at = parseInt(localStorage.getItem("centrale_op_at")||"0", 10);
     if (!c) return null;
+    if (!at || (Date.now()-at) > CODE_SESSION_TTL_MS) { // session expirée -> reconnexion
+      ["centrale_op_code","centrale_op_name","centrale_op_at"].forEach(k=>localStorage.removeItem(k));
+      return null;
+    }
     return { code:c, name: localStorage.getItem("centrale_op_name")||"" };
   });
   const [adminEmail, setAdminEmail] = useState(localStorage.getItem("centrale_admin_email")||"");
@@ -2900,6 +2977,20 @@ function App() {
 
   const allSessions = useAllSessions();
   const allDecoupe = useAllDecoupe();
+
+  // Forçage de MAJ : au démarrage + toutes les 10 min.
+  useEffect(() => { centraleCheckVersion(); const t=setInterval(centraleCheckVersion, 10*60*1000); return ()=>clearInterval(t); }, []);
+  // Expiration de session code (1 h) : déconnexion automatique -> reconnexion obligatoire.
+  useEffect(() => {
+    const check = () => {
+      const at = parseInt(localStorage.getItem("centrale_op_at")||"0", 10);
+      if (operator && (!at || (Date.now()-at) > CODE_SESSION_TTL_MS)) {
+        ["centrale_op_code","centrale_op_name","centrale_op_at"].forEach(k=>localStorage.removeItem(k));
+        setOperator(null);
+      }
+    };
+    const t = setInterval(check, 30*1000); return () => clearInterval(t);
+  }, [operator]);
 
   // Chaîne d'affichage de l'opérateur (les composants dispatch attendent une chaîne).
   const opObj = operator || { code:"", name: adminEmail || "Admin" };
@@ -2960,17 +3051,12 @@ function App() {
   // ===== LANDING =====
   if (module===null) return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} />;
 
-  // ===== ADMIN (connexion Google) =====
-  if (module==="admin") {
-    if (!adminEmail) return <AdminGate operator={opName} onSuccess={onAdminSuccess} onClose={()=>setModule(null)} />;
-    if (adminView==="session" && adminViewingSession) return <AdminSessionDetail session={adminViewingSession} onClose={()=>{ setAdminViewingSession(null); setAdminView("screen"); }} />;
-    if (dView==="naming" && namingData) return <NamingScreen supplier={namingData.supplier} products={namingData.products} storeColumns={namingData.storeColumns} onConfirm={handleNamingConfirm} onCancel={()=>{ setNamingData(null); setModule("admin"); }} />;
-    return <AdminScreen operator={opObj} adminEmail={adminEmail} allSessions={allSessions} onClose={()=>setModule(null)} onSessionStart={handleSessionStart} onDecoupeStart={handleDecoupeStart} onNeedsNaming={handleNeedsNaming} onViewSession={(s)=>{ setAdminViewingSession(s); setAdminView("session"); }} />;
-  }
+  // ===== ADMIN = accès à la CONSOLE DE CHARGEMENT (gestion) =====
+  if (module==="admin") return <AdminConsoleScreen onBack={()=>setModule(null)} />;
 
   // ===== DISPATCH PALETTE =====
   if (module==="dispatch") {
-    if (!operator && !adminEmail) return <CodeLoginScreen moduleLabel="Dispatch palette" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
+    if (!operator && !adminEmail) return <CodeLoginScreen moduleLabel="Dispatch palette" moduleKey="dispatch" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
     if (dView==="naming" && namingData) return <NamingScreen supplier={namingData.supplier} products={namingData.products} storeColumns={namingData.storeColumns} onConfirm={handleNamingConfirm} onCancel={()=>{ setNamingData(null); setDView("home"); }} />;
     if (dView==="palette" && paletteStore) return <PaletteDetailScreen storeCode={paletteStore} allSessions={allSessions} adminEmail={adminEmail} onClose={()=>{ setPaletteStore(null); setDView("home"); }} />;
     if (dView==="recap" && recapData) return <RecapScreen sessionId={sessionId} operator={opName} supplier={supplier} products={recapData.products} storeColumns={storeColumns} state={recapData.state} onClose={()=>setDView("dispatch")} onLeave={handleLeaveSession} />;
@@ -2980,7 +3066,7 @@ function App() {
 
   // ===== DÉCOUPE FROMAGE =====
   if (module==="decoupe") {
-    if (!operator && !adminEmail) return <CodeLoginScreen moduleLabel="Découpe fromage" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
+    if (!operator && !adminEmail) return <CodeLoginScreen moduleLabel="Découpe fromage" moduleKey="decoupe" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
     if (decView==="recap" && decRecapData) return <DecoupeRecap sessionId={decSessionId} operator={opObj} supplier={decSupplier} products={decRecapData.products} state={decRecapData.state} onClose={()=>setDecView("decoupe")} onLeave={handleDecoupeLeave} />;
     if (decView==="decoupe" && decSessionId && decProducts.length>0) return <DecoupeScreen sessionId={decSessionId} operator={opObj} supplier={decSupplier} products={decProducts} onFinish={handleDecoupeFinish} onLeave={handleDecoupeLeave} />;
     return <DecoupeHome operator={opObj} allDecoupe={allDecoupe} adminEmail={adminEmail} onJoin={handleDecoupeJoin} onOpenAdmin={()=>setModule("admin")} onBack={()=>setModule(null)} />;
