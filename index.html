@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>La Centrale PDP - Dispatch palette</title>
+<title>La Centrale PDP</title>
 <script>
 // Repli CDN : si jsDelivr est bloqué/inaccessible, on recharge depuis unpkg (synchrone).
 function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
@@ -188,6 +188,61 @@ function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
   .pill { display:inline-block; font-size:10px; font-weight:700; padding:2px 7px; border-radius:9px; }
   .pill.four { background:#ffebee; color:#c62828; }
   .pill.int { background:#ede7f6; color:#5e35b1; }
+  /* ===== Landing / choix de module ===== */
+  .land { min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:26px 16px 40px; }
+  .land-logo { font-size:30px; font-weight:900; color:#1a4d2e; letter-spacing:-.5px; text-align:center; margin-top:6px; }
+  .land-tag { color:#666; font-size:14px; margin:4px 0 22px; text-align:center; }
+  .mod-grid { display:grid; grid-template-columns:repeat(2,minmax(150px,1fr)); gap:14px; width:100%; max-width:560px; }
+  .mod-tile { background:#fff; border:1.5px solid #e6e8ec; border-radius:18px; padding:16px 14px 18px; text-align:center; cursor:pointer; transition:transform .12s, box-shadow .12s, border-color .12s; box-shadow:0 2px 10px rgba(0,0,0,.05); display:flex; flex-direction:column; align-items:center; gap:10px; }
+  .mod-tile:active { transform:scale(.97); }
+  .mod-tile:hover { box-shadow:0 6px 18px rgba(0,0,0,.10); border-color:#1a4d2e; }
+  .mod-tile .mt-name { font-size:17px; font-weight:800; color:#1a1a1a; }
+  .mod-tile .mt-sub { font-size:12px; color:#777; line-height:1.3; }
+  .mod-tile .mt-art { width:100%; height:104px; display:flex; align-items:center; justify-content:center; }
+  .mod-tile.palette { border-top:4px solid #1a4d2e; }
+  .mod-tile.fromage { border-top:4px solid #ef8f00; }
+  .mod-tile.reception { border-top:4px solid #1565c0; }
+  .mod-tile.admin { border-top:4px solid #5e35b1; }
+  .land-foot { margin-top:20px; display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+  .land-foot button { background:#f0f0f0; color:#555; border-radius:8px; padding:9px 14px; font-size:13px; font-weight:600; }
+  /* ===== Découpe fromage ===== */
+  .fr-head { background:#8a5a00; }
+  .cheese-card { background:#fff; border:1.5px solid #e6e8ec; border-radius:12px; padding:14px; margin-bottom:10px; }
+  .cheese-card.done { background:#e8f5e9; border-color:#4caf50; }
+  .cheese-card .cc-name { font-size:15px; font-weight:800; margin-bottom:6px; }
+  .cheese-card .cc-tar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  .tgt { border-radius:8px; padding:8px 10px; font-size:12px; font-weight:700; flex:1; min-width:120px; text-align:center; }
+  .tgt.kbg { background:#e3f2fd; color:#1565c0; }
+  .tgt.rob { background:#f3e5f5; color:#6a1b9a; }
+  .tgt .big { font-size:20px; display:block; }
+  .btn-cut { width:100%; padding:14px; font-size:16px; font-weight:800; background:#ef8f00; color:#fff; border-radius:10px; }
+  .btn-cut:active { background:#d47f00; }
+  .weigh-wrap { padding:14px 14px 120px; }
+  .weigh-display { text-align:center; font-size:52px; font-weight:900; color:#1a1a1a; padding:12px 0 4px; font-variant-numeric:tabular-nums; }
+  .weigh-unit { font-size:22px; color:#999; font-weight:700; }
+  .weigh-verdict { text-align:center; font-size:15px; font-weight:800; padding:10px; border-radius:10px; margin:8px 0 14px; }
+  .weigh-verdict.kbg { background:#e3f2fd; color:#1565c0; }
+  .weigh-verdict.rob { background:#f3e5f5; color:#6a1b9a; }
+  .weigh-verdict.none { background:#f4f5f7; color:#999; }
+  .keypad { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; max-width:420px; margin:0 auto; }
+  .keypad button { padding:22px 0; font-size:26px; font-weight:800; background:#fff; border:1.5px solid #ddd; border-radius:12px; color:#1a1a1a; }
+  .keypad button:active { background:#f0f0f0; }
+  .keypad button.wide { grid-column:span 2; }
+  .keypad button.act { background:#ef8f00; color:#fff; border-color:#ef8f00; }
+  .keypad button.del { background:#fdecea; color:#c62828; border-color:#ffcdd2; }
+  .piece-tally { display:flex; gap:10px; margin-bottom:12px; }
+  .piece-tally .pt { flex:1; text-align:center; border-radius:10px; padding:10px; }
+  .piece-tally .pt.kbg { background:#e3f2fd; }
+  .piece-tally .pt.rob { background:#f3e5f5; }
+  .piece-tally .pt .n { font-size:24px; font-weight:900; }
+  .piece-tally .pt.kbg .n { color:#1565c0; }
+  .piece-tally .pt.rob .n { color:#6a1b9a; }
+  .piece-tally .pt .l { font-size:11px; color:#666; font-weight:700; }
+  .piece-log { max-height:150px; overflow:auto; margin-top:8px; }
+  .piece-log .pl { display:flex; justify-content:space-between; font-size:13px; padding:6px 8px; border-bottom:1px solid #f0f0f0; }
+  .piece-log .pl .pd { font-weight:700; }
+  .piece-log .pl .pd.kbg { color:#1565c0; }
+  .piece-log .pl .pd.rob { color:#6a1b9a; }
 </style>
 </head>
 <body>
@@ -217,7 +272,49 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v2.5";
+const APP_VERSION = "v3.0";
+
+// URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
+// ⚠️ À ajuster selon le déploiement réel.
+const CONSOLE_URL = "https://pribon.github.io/admin/chargement.html";
+// URL de l'app Réception (magasin / PDP) — ouverte depuis la tuile Réception.
+// ⚠️ À ajuster selon le déploiement réel.
+const RECEPTION_URL = "https://pribon.github.io/admin/reception.html";
+
+// Découpe fromage : poids de pièce cible Kelbongoo (g) + tolérance (%).
+const FROMAGE_DEFAULT_POIDS = 200;   // grammes
+const FROMAGE_DEFAULT_TOL   = 10;    // ± %
+// Entités de destination de la découpe.
+const FROMAGE_ENTITES = [
+  { code:"KBG", label:"Kelbongoo (Pantin)", precis:true  },  // poids précis, tolérance stricte
+  { code:"ROB", label:"Pribon Robespierre", precis:false },  // vendu au poids exact -> reçoit le reste
+];
+const entiteLabel = (c) => (FROMAGE_ENTITES.find(e=>e.code===c)||{}).label || c;
+// Destinataire du bilan de découpe.
+const DECOUPE_MAIL = "rr@pribon.org";
+// Seuil de rendement "bravo".
+const FROMAGE_RENDEMENT_OK = 85; // %
+// Dossiers Drive de traçabilité (créés côté Apps Script).
+const TRACA_ROOT_FOLDER = "Traçabilité fromage";
+
+// Upload d'une étiquette de traçabilité (photo + métadonnées) vers le Drive Pribon.
+// ⚠️ Nécessite une action Apps Script "upload-tracabilite" côté serveur
+//    (crée le dossier "Traçabilité fromage/<magasin>" et y range la photo).
+// Best-effort : en cas d'échec on garde quand même la saisie dans Firebase.
+async function uploadTracabilite({ base64, filename, magasin, nom, lot, dlc, operatorCode }) {
+  try {
+    const r = await fetch(APPS_SCRIPT_URL, {
+      method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
+      body:JSON.stringify({ action:"upload-tracabilite", folder:TRACA_ROOT_FOLDER, magasin, nom, lot, dlc, filename, base64, operatorCode })
+    });
+    const j = await r.json();
+    return { ok:!!(j&&j.url), url:(j&&j.url)||"" };
+  } catch(e) { return { ok:false, url:"", error:e.message }; }
+}
+// Lit un fichier image -> dataURL base64 (pour upload).
+function fileToBase64(file) {
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result)); r.onerror=rej; r.readAsDataURL(file); });
+}
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDtcoRoknYM4JrJJfcuhpnVMeS-OurwYdU",
@@ -357,6 +454,93 @@ const isFallbackAdmin = (name) => FALLBACK_ADMIN_NAMES.includes((name||"").toLow
 // Noms longs des magasins pour les BL / palettes.
 const STORE_LONG = { ROB:"ROBESPIERRE", TOL:"TOLBIAC", PDP:"PORTE DE PANTIN", BIC:"BICHAT", BAR:"BARBES", BOR:"BORDEAUX", CES:"CESAR", CHA:"CHARONNE", FOR:"FORGE", LIL:"LILLE", NCA:"NATION A", NCC:"NATION C", PAD:"PADOUE", PDC:"PDC", ROM:"ROME", STB:"SAINT-BLAISE" };
 const storeLong = (code, label) => STORE_LONG[code] || label || code;
+
+/* =========================================================================
+   LOGIN PAR CODE (validé côté serveur, comme l'app Réception)
+   POST { action:"verify-code", code, storeCode:"CENTRALE" } -> { valid, name? }
+   Repli tolérant : si le serveur ne répond pas / n'implémente pas l'action,
+   on n'empêche pas l'entrepôt de travailler (le code sert d'identifiant).
+   ========================================================================= */
+async function verifyCentraleCode(code) {
+  const clean = (code||"").toString().trim();
+  if (!/^\d{3,8}$/.test(clean)) return { valid:false, reason:"format" };
+  try {
+    const r = await fetch(APPS_SCRIPT_URL, {
+      method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
+      body:JSON.stringify({ action:"verify-code", code:clean, storeCode:"CENTRALE", scope:"CENTRALE" })
+    });
+    const j = await r.json();
+    if (j && typeof j.valid === "boolean") return { valid:j.valid, name:(j.name||j.prenom||"").trim(), server:true };
+    // Réponse inattendue -> repli
+    return { valid:true, name:"", server:false, degraded:true };
+  } catch(e) {
+    // Serveur injoignable / action absente -> repli local (ne bloque pas l'entrepôt)
+    return { valid:true, name:"", server:false, degraded:true };
+  }
+}
+// Nom affichable d'un opérateur à partir de son code + nom résolu.
+const operatorDisplay = (code, name) => (name && name.trim()) ? name.trim() : ("Code " + code);
+
+/* =========================================================================
+   EXCEL PARSING (fromage) — détecte désignation + colonnes ROB / KBG + poids
+   ========================================================================= */
+function parseFromageFile(workbook) {
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header:1, defval:"" });
+  const N = (s) => stripAccents((s||"").toString()).toLowerCase().trim();
+  const isRob = (n) => /(rob|robespierre|montreuil|pribon)/.test(n);
+  const isKbg = (n) => /(kbg|kelbongoo|pantin)/.test(n);
+  const isPoids = (n) => /(poids|grammage|gramme|piece.*g|pds)/.test(n);
+  const isDesig = (n) => n.includes("designation")||n==="produit"||n==="libelle"||n==="nom"||n==="fromage"||n==="description"||n==="article";
+  const isCode = (n) => n==="code"||n==="ref"||n==="reference"||n==="ean"||n==="code article"||n.includes("gencod");
+  // Recherche de la ligne d'en-têtes
+  let hIdx = -1, headers = null;
+  for (let i=0; i<Math.min(rows.length,25); i++) {
+    const r = rows[i].map(N);
+    if (r.some(isDesig) && (r.some(isRob)||r.some(isKbg))) { hIdx=i; headers=rows[i]; break; }
+  }
+  if (hIdx === -1) {
+    for (let i=0; i<Math.min(rows.length,25); i++) {
+      const r = rows[i].map(N);
+      if (r.some(isDesig)) { hIdx=i; headers=rows[i]; break; }
+    }
+  }
+  if (hIdx === -1) throw new Error("Impossible de trouver une ligne d'en-têtes (désignation / fromage).");
+  let iDes=-1, iCode=-1, iRob=-1, iKbg=-1, iPds=-1;
+  headers.forEach((h,idx) => {
+    const n = N(h); if (!n) return;
+    if (iDes<0 && isDesig(n) && n!=="article") iDes=idx;
+    if (iCode<0 && (isCode(n)||n==="article")) iCode=idx;
+    if (iRob<0 && isRob(n)) iRob=idx;
+    if (iKbg<0 && isKbg(n)) iKbg=idx;
+    if (iPds<0 && isPoids(n)) iPds=idx;
+  });
+  if (iDes<0 && iCode>=0) iDes=iCode;
+  if (iDes<0) throw new Error("Colonne désignation introuvable.");
+  const num = (v) => { const n=parseFloat(String(v).replace(",",".").replace(/[^\d.]/g,"")); return isNaN(n)?0:n; };
+  const products = [];
+  for (let i=hIdx+1; i<rows.length; i++) {
+    const row = rows[i]; if (!row) continue;
+    const designation = (row[iDes]||"").toString().trim();
+    if (!designation) continue;
+    const dl = stripAccents(designation.toLowerCase());
+    if (dl==="total"||dl==="totaux"||dl.includes("montant")) continue;
+    const robCmd = iRob>=0 ? num(row[iRob]) : 0;
+    const kbgCmd = iKbg>=0 ? num(row[iKbg]) : 0;
+    const poids  = iPds>=0 && num(row[iPds])>0 ? num(row[iPds]) : FROMAGE_DEFAULT_POIDS;
+    if (robCmd===0 && kbgCmd===0 && iRob<0 && iKbg<0) { /* pas de commande détectée: on garde quand même */ }
+    products.push({
+      article: iCode>=0 ? (row[iCode]||"").toString().trim() : "",
+      designation,
+      robCmd,                    // commande Robespierre (pièces ou kg selon usage)
+      kbgTarget: Math.round(kbgCmd), // nb de pièces précises pour Kelbongoo (0 si vide)
+      poids,                     // poids cible d'une pièce Kelbongoo (g)
+      tol: FROMAGE_DEFAULT_TOL   // tolérance ± %
+    });
+  }
+  if (!products.length) throw new Error("Aucune ligne fromage trouvée.");
+  return { products, hasRob:iRob>=0, hasKbg:iKbg>=0, hasPoids:iPds>=0 };
+}
 
 /* =========================================================================
    EXCEL PARSING (dispatch)  — inchangé + détection colisage
@@ -737,21 +921,101 @@ function reopenLastPalette(dateKey, storeCode, currentCloses) {
 }
 
 /* =========================================================================
-   LOGIN
+   FIREBASE — SESSIONS DÉCOUPE FROMAGE  (nœud "decoupe")
    ========================================================================= */
-function LoginScreen({ onLogin }) {
-  const [name, setName] = useState(localStorage.getItem("dispatch_operator")||"");
-  const submit = () => { if (!name.trim()) return; localStorage.setItem("dispatch_operator", name.trim()); onLogin(name.trim()); };
+function useDecoupeSession(sessionId, operator) {
+  const [state, setState] = useState({});
+  const [meta, setMeta] = useState(null);
+  const [connected, setConnected] = useState(false);
+  useEffect(() => {
+    if (!firebaseReady || !sessionId) return;
+    const stateRef = db.ref(`decoupe/${sessionId}/state`);
+    const metaRef = db.ref(`decoupe/${sessionId}/meta`);
+    const connectedRef = db.ref(".info/connected");
+    const onState = (snap)=>setState(snap.val()||{});
+    const onMeta = (snap)=>setMeta(snap.val()||null);
+    const onConn = (snap)=>setConnected(!!snap.val());
+    stateRef.on("value", onState); metaRef.on("value", onMeta); connectedRef.on("value", onConn);
+    return () => { stateRef.off("value",onState); metaRef.off("value",onMeta); connectedRef.off("value",onConn); };
+  }, [sessionId]);
+  const updateLocal = useCallback((key,patch)=>{ setState(prev=>({ ...prev, [key]:{ ...(prev[key]||{}), ...patch } })); }, []);
+  const setRow = useCallback((key, patch) => {
+    if (firebaseReady && sessionId) db.ref(`decoupe/${sessionId}/state/${key}`).update(patch); else updateLocal(key, patch);
+  }, [sessionId, updateLocal]);
+  return { state, meta, connected: firebaseReady?connected:true, setRow };
+}
+function useAllDecoupe() {
+  const [sessions, setSessions] = useState({});
+  useEffect(() => {
+    if (!firebaseReady) return;
+    const ref = db.ref("decoupe");
+    const h = (snap)=>setSessions(snap.val()||{});
+    ref.on("value", h);
+    return () => ref.off("value", h);
+  }, []);
+  return sessions;
+}
+// Bornes de tolérance Kelbongoo (grammes) pour un fromage.
+const frBounds = (p) => {
+  const w = p.poids||FROMAGE_DEFAULT_POIDS, t = (p.tol!=null?p.tol:FROMAGE_DEFAULT_TOL)/100;
+  return { min: Math.round(w*(1-t)), max: Math.round(w*(1+t)) };
+};
+// Décide de l'entité d'une pièce selon son poids + le nb de pièces KBG déjà faites.
+const frRoute = (product, weight, kbgDone) => {
+  const { min, max } = frBounds(product);
+  const need = (product.kbgTarget||0) > 0 ? (kbgDone < product.kbgTarget) : (product.kbgTarget===0 && (product.robCmd||0)===0 ? true : false);
+  // Dans la tolérance ET Kelbongoo a encore besoin de pièces -> KBG, sinon Robespierre.
+  if (weight>=min && weight<=max && (need || (product.kbgTarget||0)===0 && (product.robCmd||0)===0)) return "KBG";
+  return "ROB";
+};
+// Agrège l'état d'un fromage (pièces déjà coupées).
+function frAgg(status) {
+  const pieces = (status && status.pieces) || [];
+  let kbgN=0, kbgG=0, robN=0, robG=0;
+  pieces.forEach(pc => { if (pc.dest==="KBG"){ kbgN++; kbgG+=pc.w; } else { robN++; robG+=pc.w; } });
+  return { kbgN, kbgG, robN, robG, total:pieces.length };
+}
+
+/* =========================================================================
+   LOGIN PAR CODE  (remplace la saisie du prénom)
+   ========================================================================= */
+function CodeLoginScreen({ moduleLabel, onLogin, onBack }) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async () => {
+    const c = code.trim();
+    if (!/^\d{3,8}$/.test(c)) { setError("Entre ton code (3 à 8 chiffres)."); return; }
+    setBusy(true); setError("");
+    const res = await verifyCentraleCode(c);
+    setBusy(false);
+    if (!res.valid) { setError("Code non reconnu. Vérifie auprès du gérant."); return; }
+    const name = res.name || "";
+    localStorage.setItem("centrale_op_code", c);
+    if (name) localStorage.setItem("centrale_op_name", name);
+    onLogin({ code:c, name });
+  };
+  const tap = (d) => { setError(""); setCode(v => (v.length<8 ? v+d : v)); };
+  const del = () => setCode(v => v.slice(0,-1));
   return (
     <div className="screen-center">
       <div className="logo">{BRAND}</div>
-      <div className="tag">Dispatch palette</div>
+      <div className="tag">{moduleLabel}</div>
       <div className="card">
         <div className="field">
-          <label>Ton prénom</label>
-          <input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="Ex: Marie" autoFocus onKeyDown={e=>e.key==="Enter"&&submit()} />
+          <label>Ton code</label>
+          <input type="tel" inputMode="numeric" value={code} onChange={e=>{ setError(""); setCode(e.target.value.replace(/\D/g,"").slice(0,8)); }} placeholder="•••••" autoFocus
+            onKeyDown={e=>e.key==="Enter"&&submit()} style={{textAlign:"center", fontSize:30, letterSpacing:8, fontWeight:800}} />
         </div>
-        <button className="btn-primary" onClick={submit} disabled={!name.trim()}>Continuer</button>
+        <div className="keypad" style={{marginBottom:14}}>
+          {["1","2","3","4","5","6","7","8","9"].map(d=><button key={d} onClick={()=>tap(d)}>{d}</button>)}
+          <button className="del" onClick={del}>⌫</button>
+          <button onClick={()=>tap("0")}>0</button>
+          <button className="act" onClick={submit} disabled={busy}>✓</button>
+        </div>
+        {error && <div style={{color:"#c62828", background:"#ffebee", padding:10, borderRadius:6, fontSize:13, marginBottom:10}}>{error}</div>}
+        <button className="btn-primary" onClick={submit} disabled={busy || !code.trim()}>{busy?"Vérification…":"Continuer"}</button>
+        <button className="btn-secondary" onClick={onBack}>← Retour au menu</button>
       </div>
     </div>
   );
@@ -760,7 +1024,7 @@ function LoginScreen({ onLogin }) {
 /* =========================================================================
    ACCUEIL — rejoindre un dispatch + palettes fictives
    ========================================================================= */
-function HomeScreen({ operator, allSessions, adminEmail, onJoinSession, onOpenAdmin, onOpenPalette, onLogout, onResetCache }) {
+function HomeScreen({ operator, allSessions, adminEmail, onJoinSession, onOpenPalette, onBack }) {
   const dateKey = todayKey();
   const closes = usePalettesCloses(dateKey);
 
@@ -848,9 +1112,7 @@ function HomeScreen({ operator, allSessions, adminEmail, onJoinSession, onOpenAd
       </div>
 
       <div style={{padding:"0 16px 40px", maxWidth:420, margin:"0 auto"}}>
-        <button className="btn-secondary" onClick={onOpenAdmin} style={{background:"#1a4d2e", color:"#fff", fontWeight:700, padding:14}}>🔐 Admin</button>
-        <button className="btn-secondary" onClick={onResetCache} style={{fontSize:13, color:"#c62828", borderColor:"#ffcdd2"}}>🔄 Réinitialiser (vider le cache)</button>
-        <button className="btn-secondary" onClick={onLogout} style={{fontSize:13, color:"#666"}}>↪ Se déconnecter ({operator})</button>
+        <button className="btn-secondary" onClick={onBack} style={{fontSize:14, color:"#666"}}>← Retour au menu</button>
         {!firebaseReady && <div className="admin-note">⚠️ Firebase non disponible — mode local uniquement.</div>}
       </div>
     </div>
@@ -1630,25 +1892,33 @@ function AdminGate({ operator, onSuccess, onClose }) {
 /* =========================================================================
    ADMIN — chargement, sessions, palettes, commande centrale, avoirs
    ========================================================================= */
-function AdminScreen({ operator, adminEmail, allSessions, onClose, onSessionStart, onNeedsNaming, onViewSession }) {
+function AdminScreen({ operator, adminEmail, allSessions, onClose, onSessionStart, onNeedsNaming, onViewSession, onDecoupeStart }) {
   const [tab, setTab] = useState("load");
+  const opName = (operator && operator.name) ? operator.name : (operator && operator.code ? ("Code "+operator.code) : String(operator||""));
   return (
     <div className="app">
       <div className="header" style={{background:"#0d3d20"}}>
         <div className="header-row">
-          <div><h1>🔐 Admin — {BRAND}</h1><div className="sub">{adminEmail && adminEmail.indexOf("fallback:")===0 ? operator+" (secours)" : adminEmail}</div></div>
+          <div><h1>🔐 Admin — {BRAND}</h1><div className="sub">{adminEmail && adminEmail.indexOf("fallback:")===0 ? opName+" (secours)" : adminEmail}</div></div>
           <div className="header-actions"><button className="header-btn" onClick={onClose}>← Retour</button></div>
         </div>
       </div>
       <div className="tabs-bar" style={{overflowX:"auto"}}>
-        <button className={`tab ${tab==="load"?"active":""}`} onClick={()=>setTab("load")} style={{minWidth:110}}>📥 Chargement</button>
+        <button className={`tab ${tab==="load"?"active":""}`} onClick={()=>setTab("load")} style={{minWidth:120}}>📥 Dispatch</button>
+        <button className={`tab ${tab==="decoupe"?"active":""}`} onClick={()=>setTab("decoupe")} style={{minWidth:120}}>🧀 Découpe</button>
         <button className={`tab ${tab==="sessions"?"active":""}`} onClick={()=>setTab("sessions")} style={{minWidth:100}}>🗂 Sessions</button>
         <button className={`tab ${tab==="stats"?"active":""}`} onClick={()=>setTab("stats")} style={{minWidth:80}}>📊 Stats</button>
       </div>
       <div style={{padding:12, paddingBottom:90}}>
         {tab==="load" && <AdminLoad operator={operator} allSessions={allSessions} onSessionStart={onSessionStart} onNeedsNaming={onNeedsNaming} />}
+        {tab==="decoupe" && <AdminLoadFromage onSessionStart={onDecoupeStart} />}
         {tab==="sessions" && <AdminSessions allSessions={allSessions} onViewSession={onViewSession} />}
         {tab==="stats" && <AdminStats allSessions={allSessions} />}
+        <div className="recap-card" style={{border:"1.5px solid #5e35b1", marginTop:8}}>
+          <h3 style={{color:"#5e35b1"}}>🖥️ Console responsable</h3>
+          <p style={{fontSize:12, color:"#666", margin:"0 0 10px 0"}}>Suivi live, écarts, historique, avoirs, messages et chargement magasins.</p>
+          <a href={CONSOLE_URL} target="_blank" rel="noreferrer" style={{display:"block", textAlign:"center", padding:14, background:"#5e35b1", color:"#fff", borderRadius:8, fontWeight:700, textDecoration:"none"}}>Ouvrir la console (chargement.html) ↗</a>
+        </div>
       </div>
     </div>
   );
@@ -2013,22 +2283,627 @@ function AdminSessionDetail({ session, onClose }) {
 }
 
 /* =========================================================================
+   LANDING — choix du module (tactile, entrepôt)
+   ========================================================================= */
+function ArtPalette() {
+  return (
+    <svg viewBox="0 0 120 104" width="100%" height="104" aria-hidden="true">
+      {/* colis */}
+      <rect x="26" y="20" width="30" height="26" rx="2" fill="#d9a066" stroke="#a9743a" strokeWidth="1.5"/>
+      <rect x="60" y="16" width="30" height="30" rx="2" fill="#e0ac72" stroke="#a9743a" strokeWidth="1.5"/>
+      <rect x="42" y="4" width="30" height="20" rx="2" fill="#d9a066" stroke="#a9743a" strokeWidth="1.5"/>
+      <line x1="41" y1="20" x2="41" y2="46" stroke="#a9743a" strokeWidth="1"/>
+      <line x1="75" y1="16" x2="75" y2="46" stroke="#a9743a" strokeWidth="1"/>
+      {/* palette EPAL */}
+      <g fill="#c98a3a" stroke="#8a5a1e" strokeWidth="1">
+        <rect x="14" y="52" width="92" height="8"/>
+        <rect x="14" y="70" width="92" height="8"/>
+        <rect x="16" y="60" width="12" height="10"/>
+        <rect x="54" y="60" width="12" height="10"/>
+        <rect x="92" y="60" width="12" height="10"/>
+      </g>
+    </svg>
+  );
+}
+function ArtFromage() {
+  return (
+    <svg viewBox="0 0 120 104" width="100%" height="104" aria-hidden="true">
+      {/* table inox */}
+      <rect x="10" y="60" width="100" height="10" rx="2" fill="#c7ced6" stroke="#96a1ac" strokeWidth="1.5"/>
+      <rect x="18" y="70" width="6" height="26" fill="#b4bcc5"/>
+      <rect x="96" y="70" width="6" height="26" fill="#b4bcc5"/>
+      {/* meule entière */}
+      <ellipse cx="42" cy="52" rx="24" ry="9" fill="#f4d774" stroke="#c9a83a" strokeWidth="1.5"/>
+      <path d="M18 52 v-14 a24 9 0 0 0 48 0 v14" fill="#f7e08c" stroke="#c9a83a" strokeWidth="1.5"/>
+      {/* part coupée */}
+      <path d="M78 54 l22 -6 l0 12 l-22 6 z" fill="#f7e08c" stroke="#c9a83a" strokeWidth="1.5"/>
+      {/* couteau */}
+      <rect x="70" y="18" width="4" height="30" fill="#9aa4ae" transform="rotate(20 72 33)"/>
+      <rect x="70" y="12" width="10" height="8" rx="2" fill="#5b636b" transform="rotate(20 75 16)"/>
+    </svg>
+  );
+}
+function ArtReception() {
+  return (
+    <svg viewBox="0 0 120 104" width="100%" height="104" aria-hidden="true">
+      <rect x="16" y="40" width="52" height="40" rx="2" fill="#d9a066" stroke="#a9743a" strokeWidth="1.5"/>
+      <path d="M68 46 h24 l12 14 v20 h-36 z" fill="#8fb7e8" stroke="#5885bb" strokeWidth="1.5"/>
+      <circle cx="40" cy="86" r="7" fill="#3a3f45"/><circle cx="86" cy="86" r="7" fill="#3a3f45"/>
+      <path d="M30 30 l6 8 l12 -16" fill="none" stroke="#2e7d32" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+}
+function ArtAdmin() {
+  return (
+    <svg viewBox="0 0 120 104" width="100%" height="104" aria-hidden="true">
+      <rect x="42" y="46" width="36" height="30" rx="4" fill="#b39ddb" stroke="#7e57c2" strokeWidth="1.5"/>
+      <path d="M48 46 v-8 a12 12 0 0 1 24 0 v8" fill="none" stroke="#7e57c2" strokeWidth="4"/>
+      <circle cx="60" cy="59" r="4" fill="#4527a0"/><rect x="58" y="60" width="4" height="9" fill="#4527a0"/>
+    </svg>
+  );
+}
+function ModuleSelect({ onPick, onResetCache }) {
+  return (
+    <div className="land">
+      <div className="land-logo">{BRAND}</div>
+      <div className="land-tag">Entrepôt Porte de Pantin — choisis un module</div>
+      <div className="mod-grid">
+        <div className="mod-tile palette" onClick={()=>onPick("dispatch")}>
+          <div className="mt-art"><ArtPalette/></div>
+          <div className="mt-name">Dispatch palette</div>
+          <div className="mt-sub">Répartir une commande fournisseur par magasin</div>
+        </div>
+        <div className="mod-tile fromage" onClick={()=>onPick("decoupe")}>
+          <div className="mt-art"><ArtFromage/></div>
+          <div className="mt-name">Découpe fromage</div>
+          <div className="mt-sub">Découpe au poids précis (Kelbongoo / Robespierre)</div>
+        </div>
+        <div className="mod-tile admin" onClick={()=>onPick("admin")}>
+          <div className="mt-art"><ArtAdmin/></div>
+          <div className="mt-name">Admin</div>
+          <div className="mt-sub">Chargement & console responsable</div>
+        </div>
+      </div>
+      <div className="land-foot">
+        <button onClick={onResetCache}>🔄 Réinitialiser (cache)</button>
+        {!firebaseReady && <span className="admin-note">⚠️ Firebase non disponible — mode local.</span>}
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   DÉCOUPE FROMAGE — accueil (rejoindre une session)
+   ========================================================================= */
+function DecoupeHome({ operator, allDecoupe, adminEmail, onJoin, onOpenAdmin, onBack }) {
+  const active = useMemo(() => {
+    const out = [];
+    Object.entries(allDecoupe||{}).forEach(([sid,s]) => {
+      if (s && s.meta && s.meta.startedAt) {
+        const total = (s.meta.products||[]).length;
+        const done = Object.values(s.state||{}).filter(x=>x&&x.done).length;
+        out.push({ id:sid, supplier:s.meta.supplier, startedAt:s.meta.startedAt, total, done });
+      }
+    });
+    out.sort((a,b)=>b.startedAt-a.startedAt);
+    return out;
+  }, [allDecoupe]);
+  return (
+    <div className="app">
+      <div className="header fr-head" style={{background:"#8a5a00"}}>
+        <div className="header-row">
+          <div><h1>🧀 Découpe fromage</h1><div className="sub">{BRAND} • {operator.name||("Code "+operator.code)}</div></div>
+          <div className="header-actions"><button className="header-btn" onClick={onBack}>← Menu</button></div>
+        </div>
+      </div>
+      <div style={{padding:12, paddingBottom:40}}>
+        <div className="recap-card">
+          <h3>🧀 Rejoindre une découpe en cours</h3>
+          {active.length===0 && <div style={{fontSize:13, color:"#888", padding:"6px 0"}}>Aucune découpe en cours. Un administrateur doit charger le fichier de découpe (Admin → Découpe fromage).</div>}
+          {active.map(s => (
+            <button key={s.id} className="btn-secondary" style={{textAlign:"left", padding:14, marginTop:6}} onClick={()=>onJoin(s.id)}>
+              <div style={{fontWeight:700, marginBottom:2}}>{s.supplier||"Découpe"}</div>
+              <div style={{fontSize:11, color:"#666"}}>Démarré à {fmtTime(s.startedAt)} • {s.done}/{s.total} fromages faits</div>
+            </button>
+          ))}
+        </div>
+        <div style={{padding:"0 4px"}}>
+          <button className="btn-secondary" onClick={onOpenAdmin} style={{background:"#8a5a00", color:"#fff", fontWeight:700, padding:14}}>🔐 Admin — charger une découpe</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Agrégat complet d'un fromage : pièces pesées + éventuel lot "déjà en pièces" (sticker).
+function frAggFull(product, st) {
+  const a = frAgg(st);
+  if (st && st.sticker) {
+    const n = st.stickerCount||0;
+    const g = (st.stickerWeight!=null && st.stickerWeight!=="") ? Number(st.stickerWeight) : ((product.poids||FROMAGE_DEFAULT_POIDS)*n);
+    if ((st.magasin||"KBG")==="KBG") return { kbgN:a.kbgN+n, kbgG:a.kbgG+g, robN:a.robN, robG:a.robG, total:a.total+n };
+    return { kbgN:a.kbgN, kbgG:a.kbgG, robN:a.robN+n, robG:a.robG+g, total:a.total+n };
+  }
+  return a;
+}
+// Rendement Kelbongoo (%) = poids parti KBG / poids total découpé.
+const rendement = (kbgG, robG) => { const t=kbgG+robG; return t>0 ? Math.round(kbgG/t*100) : 0; };
+
+/* =========================================================================
+   DÉCOUPE FROMAGE — Traçabilité (photo étiquette + lot + DLC + magasin -> Drive)
+   ========================================================================= */
+function TracabilitePanel({ sessionId, operator, products, labels, onSaved }) {
+  const [nom, setNom] = useState("");
+  const [lot, setLot] = useState("");
+  const [dlc, setDlc] = useState("");
+  const [magasin, setMagasin] = useState("KBG");
+  const [photo, setPhoto] = useState(null);   // { b64, name }
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const fileRef = useRef(null);
+  const onPhoto = async (file) => {
+    if (!file) return;
+    try { const b64 = await fileToBase64(file); setPhoto({ b64, name:file.name||"etiquette.jpg" }); }
+    catch(e){ setMsg("Photo illisible."); }
+  };
+  const save = async () => {
+    if (!nom.trim() && !photo) { setMsg("Ajoute au moins une photo ou le nom du fromage."); return; }
+    setBusy(true); setMsg("");
+    let url = "";
+    if (photo) {
+      const res = await uploadTracabilite({ base64:photo.b64, filename:photo.name, magasin, nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), operatorCode:operator.code });
+      url = res.url || "";
+      if (!res.ok) setMsg("⚠️ Photo non envoyée au Drive (serveur) — saisie conservée. " + (res.error||""));
+    }
+    const entry = { nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), magasin, photoUrl:url, at:Date.now(), by:operator.name||("#"+operator.code) };
+    if (firebaseReady && sessionId) { const ref = db.ref(`decoupe/${sessionId}/tracabilite`).push(); await ref.set(entry).catch(()=>{}); }
+    onSaved && onSaved(entry);
+    setBusy(false); setNom(""); setLot(""); setDlc(""); setPhoto(null); if (fileRef.current) fileRef.current.value="";
+    if (!msg) setMsg("✓ Étiquette enregistrée" + (url?" (Drive)":""));
+    setTimeout(()=>setMsg(""), 3000);
+  };
+  const list = Object.values(labels||{}).sort((a,b)=>(b.at||0)-(a.at||0));
+  return (
+    <div style={{padding:12, paddingBottom:110}}>
+      <div className="recap-card">
+        <h3>🏷️ Étiquette du fromage à découper</h3>
+        <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Photographie l'étiquette (lot / DLC). Si tu peux, complète les champs. La photo est rangée dans le Drive <b>Traçabilité fromage / {entiteLabel(magasin)}</b>.</p>
+        <div className="upload-zone" onClick={()=>fileRef.current&&fileRef.current.click()} style={{marginBottom:12}}>
+          <div className="icon">{photo?"✅":"📷"}</div>
+          <div className="label">{photo?("Photo prête : "+photo.name):"Prendre / choisir la photo de l'étiquette"}</div>
+          <div className="hint">l'app essaie de lire le lot ; sinon saisis-le à la main</div>
+        </div>
+        <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>onPhoto(e.target.files[0])} />
+        <div className="field"><label>Nom du fromage</label>
+          <input list="fr-noms" value={nom} onChange={e=>setNom(e.target.value)} placeholder="Ex: Comté 18 mois" style={{width:"100%"}} />
+          <datalist id="fr-noms">{(products||[]).map((p,i)=><option key={i} value={p.designation} />)}</datalist>
+        </div>
+        <div style={{display:"flex", gap:8}}>
+          <div className="field" style={{flex:1}}><label>N° de lot</label><input value={lot} onChange={e=>setLot(e.target.value)} style={{width:"100%"}} /></div>
+          <div className="field" style={{flex:1}}><label>DLC</label><input type="date" value={dlc} onChange={e=>setDlc(e.target.value)} style={{width:"100%"}} /></div>
+        </div>
+        <div className="field"><label>Magasin destinataire</label>
+          <div style={{display:"flex", gap:8}}>
+            {FROMAGE_ENTITES.map(e=>(
+              <button key={e.code} onClick={()=>setMagasin(e.code)} className="btn-secondary" style={{flex:1, background:magasin===e.code?(e.code==="KBG"?"#1565c0":"#6a1b9a"):"#f0f0f0", color:magasin===e.code?"#fff":"#333", fontWeight:700}}>{e.label}</button>
+            ))}
+          </div>
+        </div>
+        <button className="btn-primary" onClick={save} disabled={busy} style={{background:"#8a5a00"}}>{busy?"Enregistrement…":"💾 Enregistrer l'étiquette"}</button>
+        {msg && <div style={{fontSize:12, marginTop:10, padding:8, borderRadius:6, background:msg[0]==="✓"?"#e8f5e9":"#fff3e0", color:msg[0]==="✓"?"#2e7d32":"#bf6000"}}>{msg}</div>}
+      </div>
+      <div className="recap-card">
+        <h3>Étiquettes enregistrées ({list.length})</h3>
+        {list.length===0 && <div style={{fontSize:13, color:"#999"}}>Aucune pour l'instant.</div>}
+        {list.map((l,i)=>(
+          <div className="recap-stat" key={i}>
+            <span className="label">{l.nom||"(sans nom)"} {l.lot?`· lot ${l.lot}`:""} {l.dlc?`· DLC ${l.dlc}`:""} {l.photoUrl?<a href={l.photoUrl} target="_blank" rel="noreferrer">📷</a>:""}</span>
+            <span className="value" style={{color:l.magasin==="KBG"?"#1565c0":"#6a1b9a"}}>{l.magasin}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   DÉCOUPE FROMAGE — écran de pesée d'un fromage
+   ========================================================================= */
+function CheeseWeigh({ product, pkey, status, operator, connected, onSetRow, onClose }) {
+  const [w, setW] = useState("");
+  const agg = frAgg(status);
+  const { min, max } = frBounds(product);
+  const weight = parseInt(w||"0", 10) || 0;
+  const previewDest = weight>0 ? frRoute(product, weight, agg.kbgN) : null;
+  const kbgLeft = Math.max(0, (product.kbgTarget||0) - agg.kbgN);
+  const tap = (d) => setW(v => (v.length<4 ? v+d : v));
+  const del = () => setW(v => v.slice(0,-1));
+  const validate = () => {
+    if (weight<=0) return;
+    const dest = frRoute(product, weight, agg.kbgN);
+    const pieces = [ ...((status&&status.pieces)||[]), { w:weight, dest, at:Date.now(), by:operator.name||("#"+operator.code) } ];
+    onSetRow(pkey, { pieces });
+    try { navigator.vibrate && navigator.vibrate(dest==="KBG"?60:[40,40,40]); } catch(e){}
+    setW("");
+  };
+  const undo = () => {
+    const pieces = [ ...((status&&status.pieces)||[]) ];
+    if (!pieces.length) return;
+    pieces.pop();
+    onSetRow(pkey, { pieces });
+  };
+  const finish = () => {
+    onSetRow(pkey, { done:true, doneBy:operator.name||("#"+operator.code), doneAt:Date.now() });
+    onClose();
+  };
+  return (
+    <div className="app">
+      <div className="header fr-head" style={{background:"#8a5a00"}}>
+        <div className="header-row">
+          <div><h1 style={{fontSize:15}}>{product.designation}</h1>
+            <div className="sub">cible {product.poids} g · tolérance ±{product.tol}% ({min}–{max} g) <span className={`conn-status ${!connected?"offline":""}`}>{connected?"● en ligne":"● hors ligne"}</span></div>
+          </div>
+          <div className="header-actions"><button className="header-btn" onClick={onClose}>← Retour</button></div>
+        </div>
+      </div>
+      <div className="weigh-wrap">
+        <div className="piece-tally">
+          <div className="pt kbg">
+            <div className="n">{agg.kbgN}{product.kbgTarget>0?`/${product.kbgTarget}`:""}</div>
+            <div className="l">KELBONGOO · {Math.round(agg.kbgG)} g</div>
+          </div>
+          <div className="pt rob">
+            <div className="n">{agg.robN}</div>
+            <div className="l">ROBESPIERRE · {Math.round(agg.robG)} g</div>
+          </div>
+        </div>
+
+        <div className="weigh-display">{w||"0"}<span className="weigh-unit"> g</span></div>
+        <div className={`weigh-verdict ${previewDest?previewDest.toLowerCase():"none"}`}>
+          {!previewDest ? "Pèse une pièce et tape son poids"
+            : previewDest==="KBG" ? `✓ Dans la tolérance → KELBONGOO${kbgLeft>0?` (reste ${kbgLeft})`:""}`
+            : (weight<min ? `⚖️ Trop léger → ROBESPIERRE` : weight>max ? `⚖️ Trop lourd → ROBESPIERRE` : kbgLeft===0 ? `Objectif Kelbongoo atteint → ROBESPIERRE` : `→ ROBESPIERRE`)}
+        </div>
+
+        <div className="keypad">
+          {["1","2","3","4","5","6","7","8","9"].map(d=><button key={d} onClick={()=>tap(d)}>{d}</button>)}
+          <button className="del" onClick={del}>⌫</button>
+          <button onClick={()=>tap("0")}>0</button>
+          <button className="act" onClick={validate} disabled={weight<=0}>✓ Pièce</button>
+        </div>
+
+        <div style={{display:"flex", gap:8, marginTop:14, maxWidth:420, marginLeft:"auto", marginRight:"auto"}}>
+          <button className="btn-undo" style={{flex:1}} onClick={undo} disabled={agg.total===0}>↶ Annuler dernière pièce</button>
+          <button className="btn-validate" style={{flex:1, background:"#2e7d32"}} onClick={finish}>✓ Terminer ce fromage</button>
+        </div>
+
+        {agg.total>0 && (
+          <div className="recap-card" style={{marginTop:16}}>
+            <h3>Pièces coupées ({agg.total})</h3>
+            <div className="piece-log">
+              {[ ...((status&&status.pieces)||[]) ].reverse().map((pc,i)=>(
+                <div className="pl" key={i}><span>{pc.w} g</span><span className={`pd ${pc.dest.toLowerCase()}`}>{pc.dest==="KBG"?"Kelbongoo":"Robespierre"}</span></div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   DÉCOUPE FROMAGE — écran principal (liste des fromages)
+   ========================================================================= */
+function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLeave }) {
+  const { state, meta, connected, setRow } = useDecoupeSession(sessionId, operator);
+  const [search, setSearch] = useState("");
+  const [cutKey, setCutKey] = useState(null);
+  const [tab, setTab] = useState("cut"); // cut | traca
+  const [labels, setLabels] = useState({});
+
+  useEffect(() => {
+    if (!firebaseReady || !sessionId) return;
+    const ref = db.ref(`decoupe/${sessionId}/tracabilite`);
+    const h = (snap)=>setLabels(snap.val()||{});
+    ref.on("value", h); return () => ref.off("value", h);
+  }, [sessionId]);
+
+  const list = useMemo(() => products.map((p,idx)=>({...p, _pkey:productKey(p,idx)})).sort((a,b)=>a.designation.localeCompare(b.designation,"fr")), [products]);
+  const filtered = useMemo(() => { const q=search.trim(); if(!q) return list; return list.filter(p=>smartMatch(p.designation,q)||(p.article||"").includes(q)); }, [list, search]);
+  const stats = useMemo(() => { const total=list.length; const done=list.filter(p=>state[p._pkey]&&state[p._pkey].done).length; return { total, done }; }, [list, state]);
+
+  const cutProduct = cutKey ? list.find(p=>p._pkey===cutKey) : null;
+  if (cutProduct) {
+    return <CheeseWeigh product={cutProduct} pkey={cutKey} status={state[cutKey]||{}} operator={operator} connected={connected} onSetRow={setRow} onClose={()=>setCutKey(null)} />;
+  }
+
+  const setSticker = (pkey, patch) => setRow(pkey, patch);
+
+  return (
+    <div className="app">
+      <div className="header fr-head" style={{background:"#8a5a00"}}>
+        <div className="header-row">
+          <div><h1>🧀 {supplier||"Découpe"}</h1>
+            <div className="sub">{BRAND} • {operator.name||("Code "+operator.code)} • <span className={`conn-status ${!connected?"offline":""}`}>{connected?"● en ligne":"● hors ligne"}</span></div>
+          </div>
+          <div className="header-actions"><button className="header-btn" onClick={onLeave}>Quitter</button></div>
+        </div>
+        <div className="progress-bar"><div className="progress-fill" style={{width:`${stats.total>0?(stats.done/stats.total)*100:0}%`}}></div></div>
+        <div className="progress-text" style={{color:"rgba(255,255,255,.85)"}}><span>{stats.done} / {stats.total} fromages</span><span>{stats.total-stats.done} restants</span></div>
+      </div>
+
+      <div className="tabs-bar">
+        <button className={`tab ${tab==="cut"?"active":""}`} onClick={()=>setTab("cut")}>🔪 Découpe</button>
+        <button className={`tab ${tab==="traca"?"active":""}`} onClick={()=>setTab("traca")}>🏷️ Traçabilité</button>
+      </div>
+
+      {tab==="traca" && (
+        <TracabilitePanel sessionId={sessionId} operator={operator} products={products} labels={labels} />
+      )}
+
+      {tab==="cut" && (
+        <>
+          <div className="search-bar" style={{top:106}}>
+            <input type="text" placeholder="🔍 Chercher un fromage…" value={search} onChange={e=>setSearch(e.target.value)} />
+          </div>
+          <div className="product-list">
+            {filtered.length===0 && <div style={{textAlign:"center", padding:40, color:"#999"}}>Aucun fromage.</div>}
+            {filtered.map(p => {
+              const st = state[p._pkey]||{}; const agg = frAggFull(p, st); const isDone = st.done;
+              const rec = st.reception;
+              const defMag = (p.kbgTarget>0 || p.robCmd===0) ? "KBG" : "ROB";
+              const mag = st.magasin || defMag;
+              return (
+                <div className={`cheese-card ${isDone?"done":""}`} key={p._pkey}>
+                  <div className="cc-name">{p.designation}{isDone && <span className="done-badge" style={{marginLeft:8}}>✓ {st.doneBy}</span>}</div>
+                  {/* Réception */}
+                  <div style={{display:"flex", gap:6, marginBottom:8}}>
+                    <button onClick={()=>setRow(p._pkey,{reception:"ok"})} style={{flex:1, padding:9, borderRadius:8, fontWeight:700, fontSize:13, background:rec==="ok"?"#2e7d32":"#eef2f7", color:rec==="ok"?"#fff":"#333"}}>✓ Reçu OK</button>
+                    <button onClick={()=>setRow(p._pkey,{reception:"nonconf"})} style={{flex:1, padding:9, borderRadius:8, fontWeight:700, fontSize:13, background:rec==="nonconf"?"#c62828":"#eef2f7", color:rec==="nonconf"?"#fff":"#333"}}>⚠ Non conforme</button>
+                  </div>
+                  <div className="cc-tar">
+                    <div className="tgt kbg"><span className="big">{agg.kbgN}{p.kbgTarget>0?`/${p.kbgTarget}`:""}</span>Kelbongoo · {p.poids}g (±{p.tol}%)</div>
+                    <div className="tgt rob"><span className="big">{agg.robN}</span>Robespierre{p.robCmd>0?` · cmd ${p.robCmd}`:""}</div>
+                  </div>
+                  {/* Déjà en pièces (sticker) */}
+                  <label style={{display:"flex", alignItems:"center", gap:8, fontSize:13, margin:"4px 0 8px", fontWeight:600, color:"#555"}}>
+                    <input type="checkbox" checked={!!st.sticker} onChange={e=>setSticker(p._pkey,{sticker:e.target.checked})} style={{width:18, height:18}} />
+                    Déjà en pièces (sticker uniquement, pas de découpe)
+                  </label>
+                  {st.sticker ? (
+                    <div style={{display:"flex", gap:6, alignItems:"flex-end", marginBottom:8}}>
+                      <div style={{flex:1}}><label style={{fontSize:11, fontWeight:700, color:"#666"}}>Nb pièces</label>
+                        <input type="number" inputMode="numeric" value={st.stickerCount!=null?st.stickerCount:""} onChange={e=>setSticker(p._pkey,{stickerCount:parseInt(e.target.value,10)||0})} style={{width:"100%", padding:8, border:"1.5px solid #ddd", borderRadius:6, fontSize:16, fontWeight:700, textAlign:"center"}} /></div>
+                      <div style={{flex:1.4}}><label style={{fontSize:11, fontWeight:700, color:"#666"}}>Magasin</label>
+                        <div style={{display:"flex", gap:4}}>
+                          {FROMAGE_ENTITES.map(e=>(<button key={e.code} onClick={()=>setSticker(p._pkey,{magasin:e.code})} style={{flex:1, padding:8, borderRadius:6, fontSize:12, fontWeight:700, background:mag===e.code?(e.code==="KBG"?"#1565c0":"#6a1b9a"):"#eef2f7", color:mag===e.code?"#fff":"#333"}}>{e.code}</button>))}
+                        </div></div>
+                    </div>
+                  ) : (
+                    <button className="btn-cut" onClick={()=>setCutKey(p._pkey)}>{agg.total>0?"Reprendre la découpe":"🔪 Découper"}</button>
+                  )}
+                  {!isDone
+                    ? <button className="btn-validate" style={{width:"100%", marginTop:8, background:"#2e7d32"}} onClick={()=>setRow(p._pkey,{done:true, doneBy:operator.name||("#"+operator.code), doneAt:Date.now()})}>✓ Terminer ce fromage</button>
+                    : <button className="btn-undo" style={{width:"100%", marginTop:8}} onClick={()=>setRow(p._pkey,{done:false, doneBy:null, doneAt:null})}>Annuler « terminé »</button>}
+                </div>
+              );
+            })}
+          </div>
+          <div className="bottom-bar">
+            <div className="stats"><span>Avancement: <b>{stats.done}/{stats.total}</b></span><span>{stats.total>0?Math.round((stats.done/stats.total)*100):0}%</span></div>
+            <button className="btn-finish" onClick={()=>{ if(stats.done===stats.total && stats.total>0) launchConfetti(); onFinish(state, list); }} disabled={stats.done===0} style={{background:"#8a5a00"}}>{stats.done===stats.total&&stats.total>0?"✓ Terminer et voir le bilan":`Voir le bilan (${stats.done} faits)`}</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================================
+   DÉCOUPE FROMAGE — récap
+   ========================================================================= */
+function generateFromageBL(supplier, products, state, entity) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation:"portrait", unit:"mm", format:"a4" });
+  const entLabel = entity==="KBG" ? "KELBONGOO (Pantin)" : "PRIBON ROBESPIERRE";
+  doc.setFillColor(138,90,0); doc.rect(0,0,210,25,"F");
+  doc.setTextColor(255,255,255); doc.setFontSize(16); doc.setFont(undefined,"bold"); doc.text("LA CENTRALE PDP", 14, 12);
+  doc.setFontSize(11); doc.setFont(undefined,"normal"); doc.text("Découpe fromage — Bon de livraison", 14, 19);
+  doc.setFontSize(16); doc.setFont(undefined,"bold"); doc.text(entLabel, 196, 15, { align:"right" });
+  doc.setTextColor(0,0,0); doc.setFontSize(10); doc.setFont(undefined,"normal");
+  let y=35; doc.text("Fournisseur : "+(supplier||"-"), 14, y); y+=6;
+  doc.text("Date : "+new Date().toLocaleDateString("fr-FR"), 14, y); y+=8;
+  const rows = [];
+  products.forEach((p,idx) => {
+    const st = state[productKey(p,idx)]||{}; const agg = frAggFull(p, st);
+    const n = entity==="KBG"?agg.kbgN:agg.robN, g = entity==="KBG"?agg.kbgG:agg.robG;
+    if (n>0) rows.push([ p.designation, String(n), Math.round(g)+" g" ]);
+  });
+  doc.autoTable({ startY:y, head:[["Fromage","Pièces","Poids total"]], body:rows,
+    headStyles:{ fillColor:[138,90,0], textColor:255, fontStyle:"bold" }, styles:{ fontSize:9, cellPadding:2 },
+    columnStyles:{ 0:{cellWidth:120}, 1:{cellWidth:30, halign:"center"}, 2:{cellWidth:32, halign:"center"} }, margin:{left:14,right:14} });
+  const totN = rows.reduce((s,r)=>s+parseInt(r[1],10),0);
+  const fy = doc.lastAutoTable.finalY+6; doc.setFont(undefined,"bold");
+  doc.text(`TOTAL : ${rows.length} fromage(s) — ${totN} pièce(s)`, 14, fy);
+  doc.save(`Decoupe_${entity}_${(supplier||"").replace(/[^a-zA-Z0-9]/g,"")}_${new Date().toISOString().slice(0,10)}.pdf`);
+}
+function DecoupeRecap({ sessionId, operator, supplier, products, state, onClose, onLeave }) {
+  const [sent, setSent] = useState(false); const [sending, setSending] = useState(false); const [error, setError] = useState("");
+  const totals = useMemo(() => {
+    let kbgN=0,kbgG=0,robN=0,robG=0; const lines=[];
+    products.forEach((p,idx)=>{ const st=state[productKey(p,idx)]||{}; const a=frAggFull(p,st);
+      kbgN+=a.kbgN; kbgG+=a.kbgG; robN+=a.robN; robG+=a.robG;
+      if (a.total>0 || st.reception) lines.push({ designation:p.designation, article:p.article, poids:p.poids, tol:p.tol, kbgTarget:p.kbgTarget, robCmd:p.robCmd, sticker:!!st.sticker, reception:st.reception||"", ...a }); });
+    return { kbgN,kbgG,robN,robG,lines, rend:rendement(kbgG,robG) };
+  }, [products, state]);
+  const bravo = totals.rend>=FROMAGE_RENDEMENT_OK;
+  const dateStr = new Date().toLocaleDateString("fr-FR");
+  const send = async () => {
+    setSending(true); setError("");
+    const payload = { action:"log-decoupe-recap", sessionId, supplier, operator:operator.name||("#"+operator.code), operatorCode:operator.code, brand:BRAND,
+      date:dateStr, at:new Date().toISOString(),
+      mailTo:DECOUPE_MAIL, subjectKbg:`Découpe Kelbongoo du ${dateStr}`, subjectRob:`Découpe Montreuil du ${dateStr}`,
+      rendement:totals.rend,
+      totals:{ kbgN:totals.kbgN, kbgG:Math.round(totals.kbgG), robN:totals.robN, robG:Math.round(totals.robG) },
+      lines:totals.lines.map(l=>({ designation:l.designation, article:l.article, kbgN:l.kbgN, kbgTarget:l.kbgTarget, robN:l.robN, kbgG:Math.round(l.kbgG), robG:Math.round(l.robG), robCmd:l.robCmd, sticker:l.sticker, reception:l.reception })) };
+    try { await fetch(APPS_SCRIPT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) }); setSent(true); }
+    catch(e){ setError(e.message); } finally { setSending(false); }
+  };
+  return (
+    <div className="app">
+      <div className="header fr-head" style={{background:"#8a5a00"}}>
+        <div className="header-row"><div><h1>Bilan découpe</h1><div className="sub">{supplier} · {dateStr}</div></div>
+          <div className="header-actions"><button className="header-btn" onClick={onClose}>← Retour</button></div></div>
+      </div>
+      <div className="recap-section">
+        <div className="recap-card" style={{textAlign:"center", background:bravo?"#e8f5e9":"#fff3e0", border:`1.5px solid ${bravo?"#a5d6a7":"#ffcc80"}`}}>
+          <div style={{fontSize:44, fontWeight:900, color:bravo?"#2e7d32":"#e65100"}}>{totals.rend}%</div>
+          <div style={{fontSize:15, fontWeight:800, color:bravo?"#2e7d32":"#e65100"}}>Rendement Kelbongoo — {bravo?"bravo 👏":"peut mieux faire"}</div>
+          <div style={{fontSize:12, color:"#666", marginTop:4}}>part du poids découpé partie en pièces Kelbongoo</div>
+        </div>
+        <div className="recap-card">
+          <h3>🧀 Bilan par entité</h3>
+          <div style={{display:"flex", gap:12}}>
+            <div className="tgt kbg" style={{flex:1}}><span className="big">{totals.kbgN}</span>Kelbongoo · {Math.round(totals.kbgG)} g</div>
+            <div className="tgt rob" style={{flex:1}}><span className="big">{totals.robN}</span>Robespierre (hors gabarit) · {Math.round(totals.robG)} g</div>
+          </div>
+        </div>
+        <div className="recap-card">
+          <h3>Détail par fromage</h3>
+          {totals.lines.length===0 && <div style={{color:"#999", fontSize:13}}>Rien pour l'instant.</div>}
+          {totals.lines.map((l,i)=>(
+            <div className="recap-stat" key={i}><span className="label">{l.designation}{l.sticker?" 🏷️":""}{l.reception==="nonconf"?" ⚠":""}</span>
+              <span className="value">KBG {l.kbgN}{l.kbgTarget>0?`/${l.kbgTarget}`:""} · ROB {l.robN}</span></div>
+          ))}
+        </div>
+        <div className="recap-card">
+          <h3>📄 Bons de livraison</h3>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8}}>
+            <button className="btn-secondary" onClick={()=>generateFromageBL(supplier, products, state, "KBG")}>BL Kelbongoo</button>
+            <button className="btn-secondary" onClick={()=>generateFromageBL(supplier, products, state, "ROB")}>BL Robespierre</button>
+          </div>
+        </div>
+        <div className="recap-card">
+          <h3>📤 Valider & envoyer le bilan</h3>
+          <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Envoie le détail à <b>{DECOUPE_MAIL}</b> (objet « Découpe Kelbongoo du {dateStr} ») et au suivi de la console.</p>
+          {!sent && <button className="btn-primary" onClick={send} disabled={sending} style={{background:"#8a5a00"}}>{sending?"Envoi…":"Valider la découpe & envoyer"}</button>}
+          {sent && <div style={{padding:12, background:"#e8f5e9", borderRadius:8, color:"#1a4d2e", fontWeight:600, textAlign:"center"}}>✓ Bilan envoyé !</div>}
+          {error && <div style={{padding:12, background:"#ffebee", borderRadius:8, color:"#c62828", fontSize:13, marginTop:8}}>{error}</div>}
+        </div>
+        <div className="recap-card"><button className="btn-secondary" onClick={onLeave} style={{background:"#8a5a00", color:"#fff", fontWeight:600}}>← Quitter et revenir</button></div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   ADMIN — chargement d'une découpe fromage
+   ========================================================================= */
+function AdminLoadFromage({ onSessionStart }) {
+  const [supplierName, setSupplierName] = useState("");
+  const [poids, setPoids] = useState(String(FROMAGE_DEFAULT_POIDS));
+  const [tol, setTol] = useState(String(FROMAGE_DEFAULT_TOL));
+  const [pending, setPending] = useState(null);
+  const [error, setError] = useState("");
+  const [sent, setSent] = useState(false);
+  const fileRef = useRef(null);
+  const processFile = async (file) => {
+    setError(""); if (!file) return;
+    try {
+      const buf = await file.arrayBuffer(); const wb = XLSX.read(buf, { type:"array" });
+      const { products, hasRob, hasKbg } = parseFromageFile(wb);
+      const P = parseInt(poids,10)||FROMAGE_DEFAULT_POIDS, T = parseInt(tol,10)||FROMAGE_DEFAULT_TOL;
+      const prods = products.map(p => ({ ...p, poids:p.poids||P, tol:T }));
+      setPending({ products:prods, hasRob, hasKbg, fileName:file.name||"decoupe" });
+    } catch(e){ setError("Erreur de lecture : "+e.message); setPending(null); }
+  };
+  const sendDecoupe = () => {
+    if (!pending) { setError("Charge d'abord le fichier de découpe."); return; }
+    const supplier = supplierName.trim() || "Découpe";
+    setSent(true); launchConfetti();
+    const sid = `decoupe_${stripAccents(supplier).replace(/[^a-zA-Z0-9]/g,"_").toLowerCase()}_${Date.now()}`;
+    onSessionStart(sid, supplier, pending.products);
+  };
+  return (
+    <>
+      <div className="recap-card">
+        <h3>🧀 Charger une découpe fromage</h3>
+        <div className="field"><label>Fournisseur / lot</label>
+          <input type="text" value={supplierName} onChange={e=>setSupplierName(e.target.value)} placeholder="Ex: LAITERIE X" style={{textTransform:"uppercase"}} disabled={!!pending} /></div>
+        <div style={{display:"flex", gap:8}}>
+          <div className="field" style={{flex:1}}><label>Poids pièce Kelbongoo (g)</label>
+            <input type="number" value={poids} onChange={e=>setPoids(e.target.value)} disabled={!!pending} /></div>
+          <div className="field" style={{flex:1}}><label>Tolérance ± %</label>
+            <input type="number" value={tol} onChange={e=>setTol(e.target.value)} disabled={!!pending} /></div>
+        </div>
+        {!pending && (
+          <div className="upload-zone" onClick={()=>fileRef.current&&fileRef.current.click()}>
+            <div className="icon">🧀</div>
+            <div className="label">Charger le fichier de découpe (Excel)</div>
+            <div className="hint">colonnes Robespierre / Kelbongoo (+ poids optionnel)</div>
+          </div>
+        )}
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={e=>processFile(e.target.files[0])} />
+        {pending && (
+          <div style={{background:"#fff8e1", border:"1.5px solid #ffe082", borderRadius:8, padding:12, marginTop:4}}>
+            <div style={{fontWeight:700, color:"#8a5a00"}}>✓ Fichier prêt : {pending.fileName}</div>
+            <div style={{fontSize:13, color:"#333", marginTop:4}}>{pending.products.length} fromage(s) · {pending.hasRob?"colonne Robespierre ✓":"⚠ pas de colonne Robespierre"} · {pending.hasKbg?"colonne Kelbongoo ✓":"⚠ pas de colonne Kelbongoo"}</div>
+            <div style={{fontSize:12, color:"#666", marginTop:4}}>Pièce Kelbongoo cible : {parseInt(poids,10)||FROMAGE_DEFAULT_POIDS} g · ±{parseInt(tol,10)||FROMAGE_DEFAULT_TOL}%</div>
+            <button className="btn-secondary" onClick={()=>{ setPending(null); setSent(false); if(fileRef.current)fileRef.current.value=""; }} style={{marginTop:8, fontSize:13}}>↺ Changer de fichier</button>
+          </div>
+        )}
+        {error && <div style={{color:"#d32f2f", fontSize:13, marginTop:12}}>{error}</div>}
+      </div>
+      <div className="recap-card" style={{border:"1.5px solid #8a5a00"}}>
+        <h3>🚀 Lancer la découpe</h3>
+        <button className="btn-primary" onClick={sendDecoupe} disabled={!pending||sent} style={{background:(!pending||sent)?"#aaa":"#ef8f00", fontSize:17}}>{sent?"🎉 Découpe lancée !":"🚀 Lancer la découpe"}</button>
+      </div>
+    </>
+  );
+}
+
+/* =========================================================================
    APP ROOT
    ========================================================================= */
 function App() {
-  const [operator, setOperator] = useState(localStorage.getItem("dispatch_operator")||"");
+  // Module courant : null (menu) | dispatch | decoupe | reception | admin
+  const [module, setModule] = useState(null);
+  // Opérateur (login par code) — partagé entre modules, persistant.
+  const [operator, setOperator] = useState(() => {
+    const c = localStorage.getItem("centrale_op_code")||"";
+    if (!c) return null;
+    return { code:c, name: localStorage.getItem("centrale_op_name")||"" };
+  });
+  const [adminEmail, setAdminEmail] = useState(localStorage.getItem("centrale_admin_email")||"");
+
+  // ----- État module DISPATCH -----
   const [sessionId, setSessionId] = useState(localStorage.getItem("dispatch_sessionId")||"");
   const [supplier, setSupplier] = useState(localStorage.getItem("dispatch_supplier")||"");
   const [products, setProducts] = useState(() => { try { return JSON.parse(localStorage.getItem("dispatch_products")||"[]"); } catch { return []; } });
   const [storeColumns, setStoreColumns] = useState(() => { try { return JSON.parse(localStorage.getItem("dispatch_storeColumns")||"[]"); } catch { return []; } });
-  const [view, setView] = useState("home"); // home | dispatch | recap | adminGate | admin | adminSession | naming | palette
+  const [dView, setDView] = useState("home"); // home | dispatch | recap | palette | naming
   const [recapData, setRecapData] = useState(null);
-  const [adminViewingSession, setAdminViewingSession] = useState(null);
   const [namingData, setNamingData] = useState(null);
   const [paletteStore, setPaletteStore] = useState(null);
-  const [adminEmail, setAdminEmail] = useState(localStorage.getItem("centrale_admin_email")||"");
+
+  // ----- État module DÉCOUPE -----
+  const [decSessionId, setDecSessionId] = useState("");
+  const [decSupplier, setDecSupplier] = useState("");
+  const [decProducts, setDecProducts] = useState([]);
+  const [decView, setDecView] = useState("home"); // home | decoupe | recap
+  const [decRecapData, setDecRecapData] = useState(null);
+
+  // ----- État module ADMIN -----
+  const [adminView, setAdminView] = useState("screen"); // screen | session
+  const [adminViewingSession, setAdminViewingSession] = useState(null);
 
   const allSessions = useAllSessions();
+  const allDecoupe = useAllDecoupe();
+
+  // Chaîne d'affichage de l'opérateur (les composants dispatch attendent une chaîne).
+  const opObj = operator || { code:"", name: adminEmail || "Admin" };
+  const opName = operatorDisplay(opObj.code||"", opObj.name||"");
 
   useEffect(() => {
     if (sessionId) localStorage.setItem("dispatch_sessionId", sessionId);
@@ -2037,60 +2912,81 @@ function App() {
     if (storeColumns.length>0) localStorage.setItem("dispatch_storeColumns", JSON.stringify(storeColumns));
   }, [sessionId, supplier, products, storeColumns]);
 
+  /* ---- DISPATCH ---- */
   const handleSessionStart = (sid, sup, prods, cols) => {
-    setSessionId(sid); setSupplier(sup); setProducts(prods); setStoreColumns(cols||[]); setView("dispatch");
-    if (firebaseReady) db.ref(`dispatch/${sid}/meta`).set({ supplier:sup, startedAt:Date.now(), products:prods, storeColumns:cols||[], createdBy:operator });
-    try { fetch(APPS_SCRIPT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"log-dispatch-start", sessionId:sid, supplier:sup, operator, total:prods.length, startedAt:new Date().toISOString(), brand:BRAND }) }).catch(()=>{}); } catch(e){}
+    setSessionId(sid); setSupplier(sup); setProducts(prods); setStoreColumns(cols||[]);
+    setModule("dispatch"); setDView("dispatch");
+    if (firebaseReady) db.ref(`dispatch/${sid}/meta`).set({ supplier:sup, startedAt:Date.now(), products:prods, storeColumns:cols||[], createdBy:opName });
+    try { fetch(APPS_SCRIPT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"log-dispatch-start", sessionId:sid, supplier:sup, operator:opName, operatorCode:opObj.code, total:prods.length, startedAt:new Date().toISOString(), brand:BRAND }) }).catch(()=>{}); } catch(e){}
   };
   const handleJoinSession = (sid) => {
     if (!firebaseReady) return;
-    db.ref(`dispatch/${sid}/meta`).once("value").then(snap => { const m=snap.val(); if(m){ setSessionId(sid); setSupplier(m.supplier||"Fournisseur"); setProducts(m.products||[]); setStoreColumns(m.storeColumns||[]); setView("dispatch"); } });
+    db.ref(`dispatch/${sid}/meta`).once("value").then(snap => { const m=snap.val(); if(m){ setSessionId(sid); setSupplier(m.supplier||"Fournisseur"); setProducts(m.products||[]); setStoreColumns(m.storeColumns||[]); setDView("dispatch"); } });
   };
-  const handleNeedsNaming = (data) => { setNamingData(data); setView("naming"); };
+  const handleNeedsNaming = (data) => { setNamingData(data); setModule("dispatch"); setDView("naming"); };
   const handleNamingConfirm = (fp, fc) => { if(!namingData) return; const sup=namingData.supplier; const sid=`${stripAccents(sup).replace(/[^a-zA-Z0-9]/g,"_").toLowerCase()}_${Date.now()}`; setNamingData(null); handleSessionStart(sid, sup, fp, fc); };
-  const handleFinish = (state, pk) => { setRecapData({ state, products:pk }); setView("recap"); };
+  const handleFinish = (state, pk) => { setRecapData({ state, products:pk }); setDView("recap"); };
   const handleLeaveSession = () => {
     ["dispatch_sessionId","dispatch_supplier","dispatch_products","dispatch_storeColumns"].forEach(k=>localStorage.removeItem(k));
-    setSessionId(""); setSupplier(""); setProducts([]); setStoreColumns([]); setRecapData(null); setView("home");
+    setSessionId(""); setSupplier(""); setProducts([]); setStoreColumns([]); setRecapData(null); setDView("home");
   };
+
+  /* ---- DÉCOUPE ---- */
+  const handleDecoupeStart = (sid, sup, prods) => {
+    setDecSessionId(sid); setDecSupplier(sup); setDecProducts(prods); setModule("decoupe"); setDecView("decoupe");
+    if (firebaseReady) db.ref(`decoupe/${sid}/meta`).set({ supplier:sup, startedAt:Date.now(), products:prods, createdBy:opName });
+    try { fetch(APPS_SCRIPT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"log-decoupe-start", sessionId:sid, supplier:sup, operator:opName, operatorCode:opObj.code, total:prods.length, startedAt:new Date().toISOString(), brand:BRAND }) }).catch(()=>{}); } catch(e){}
+  };
+  const handleDecoupeJoin = (sid) => {
+    if (!firebaseReady) return;
+    db.ref(`decoupe/${sid}/meta`).once("value").then(snap => { const m=snap.val(); if(m){ setDecSessionId(sid); setDecSupplier(m.supplier||"Découpe"); setDecProducts(m.products||[]); setDecView("decoupe"); } });
+  };
+  const handleDecoupeFinish = (state, pk) => { setDecRecapData({ state, products:pk }); setDecView("recap"); };
+  const handleDecoupeLeave = () => { setDecSessionId(""); setDecSupplier(""); setDecProducts([]); setDecRecapData(null); setDecView("home"); };
+
+  /* ---- Divers ---- */
   const handleResetCache = () => {
     if (!confirm("Vider le cache de l'app sur CET appareil ?\n(Ne supprime pas les données Firebase partagées.)")) return;
-    Object.keys(localStorage).filter(k=>k.startsWith("dispatch_")&&k!=="dispatch_operator").forEach(k=>localStorage.removeItem(k));
-    setSessionId(""); setSupplier(""); setProducts([]); setStoreColumns([]); setRecapData(null); setView("home");
+    Object.keys(localStorage).filter(k=>k.startsWith("dispatch_")&&k!=="centrale_op_code"&&k!=="centrale_op_name").forEach(k=>localStorage.removeItem(k));
+    setSessionId(""); setSupplier(""); setProducts([]); setStoreColumns([]); setRecapData(null); setDView("home");
     setTimeout(()=>window.location.reload(), 100);
   };
-  const handleLogout = () => {
-    if (!confirm("Te déconnecter ?")) return;
-    ["dispatch_operator","dispatch_sessionId","dispatch_supplier","dispatch_products","dispatch_storeColumns"].forEach(k=>localStorage.removeItem(k));
-    setOperator(""); setSessionId(""); setSupplier(""); setProducts([]); setStoreColumns([]); setRecapData(null); setView("home");
+  const onAdminSuccess = (email) => { setAdminEmail(email); localStorage.setItem("centrale_admin_email", email); setModule("admin"); setAdminView("screen"); };
+  const pickModule = (m) => {
+    if (m==="reception") { try { window.open(RECEPTION_URL, "_blank"); } catch(e){ location.href = RECEPTION_URL; } return; }
+    setModule(m);
   };
-  const openAdmin = () => {
-    if (adminEmail) { setView("admin"); return; }
-    setView("adminGate");
-  };
-  const onAdminSuccess = (email) => { setAdminEmail(email); localStorage.setItem("centrale_admin_email", email); setView("admin"); };
 
-  if (!operator) return <LoginScreen onLogin={setOperator} />;
+  // ===== LANDING =====
+  if (module===null) return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} />;
 
-  if (view==="naming" && namingData) return <NamingScreen supplier={namingData.supplier} products={namingData.products} storeColumns={namingData.storeColumns} onConfirm={handleNamingConfirm} onCancel={()=>{ setNamingData(null); setView("admin"); }} />;
-
-  if (view==="adminGate") return <AdminGate operator={operator} onSuccess={onAdminSuccess} onClose={()=>setView("home")} />;
-
-  if (view==="adminSession" && adminViewingSession) return <AdminSessionDetail session={adminViewingSession} onClose={()=>{ setAdminViewingSession(null); setView("admin"); }} />;
-
-  if (view==="admin") {
-    if (!adminEmail) return <AdminGate operator={operator} onSuccess={onAdminSuccess} onClose={()=>setView("home")} />;
-    return <AdminScreen operator={operator} adminEmail={adminEmail} allSessions={allSessions} onClose={()=>setView("home")} onSessionStart={handleSessionStart} onNeedsNaming={handleNeedsNaming} onViewSession={(s)=>{ setAdminViewingSession(s); setView("adminSession"); }} />;
+  // ===== ADMIN (connexion Google) =====
+  if (module==="admin") {
+    if (!adminEmail) return <AdminGate operator={opName} onSuccess={onAdminSuccess} onClose={()=>setModule(null)} />;
+    if (adminView==="session" && adminViewingSession) return <AdminSessionDetail session={adminViewingSession} onClose={()=>{ setAdminViewingSession(null); setAdminView("screen"); }} />;
+    if (dView==="naming" && namingData) return <NamingScreen supplier={namingData.supplier} products={namingData.products} storeColumns={namingData.storeColumns} onConfirm={handleNamingConfirm} onCancel={()=>{ setNamingData(null); setModule("admin"); }} />;
+    return <AdminScreen operator={opObj} adminEmail={adminEmail} allSessions={allSessions} onClose={()=>setModule(null)} onSessionStart={handleSessionStart} onDecoupeStart={handleDecoupeStart} onNeedsNaming={handleNeedsNaming} onViewSession={(s)=>{ setAdminViewingSession(s); setAdminView("session"); }} />;
   }
 
-  if (view==="palette" && paletteStore) return <PaletteDetailScreen storeCode={paletteStore} allSessions={allSessions} adminEmail={adminEmail} onClose={()=>{ setPaletteStore(null); setView("home"); }} />;
+  // ===== DISPATCH PALETTE =====
+  if (module==="dispatch") {
+    if (!operator && !adminEmail) return <CodeLoginScreen moduleLabel="Dispatch palette" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
+    if (dView==="naming" && namingData) return <NamingScreen supplier={namingData.supplier} products={namingData.products} storeColumns={namingData.storeColumns} onConfirm={handleNamingConfirm} onCancel={()=>{ setNamingData(null); setDView("home"); }} />;
+    if (dView==="palette" && paletteStore) return <PaletteDetailScreen storeCode={paletteStore} allSessions={allSessions} adminEmail={adminEmail} onClose={()=>{ setPaletteStore(null); setDView("home"); }} />;
+    if (dView==="recap" && recapData) return <RecapScreen sessionId={sessionId} operator={opName} supplier={supplier} products={recapData.products} storeColumns={storeColumns} state={recapData.state} onClose={()=>setDView("dispatch")} onLeave={handleLeaveSession} />;
+    if (dView==="dispatch" && sessionId && products.length>0) return <DispatchScreen sessionId={sessionId} operator={opName} supplier={supplier} products={products} storeColumns={storeColumns} onFinish={handleFinish} onLeave={handleLeaveSession} />;
+    return <HomeScreen operator={opName} allSessions={allSessions} adminEmail={adminEmail} onJoinSession={handleJoinSession} onOpenPalette={(code)=>{ setPaletteStore(code); setDView("palette"); }} onBack={()=>setModule(null)} />;
+  }
 
-  if (view==="recap" && recapData) return <RecapScreen sessionId={sessionId} operator={operator} supplier={supplier} products={recapData.products} storeColumns={storeColumns} state={recapData.state} onClose={()=>setView("dispatch")} onLeave={handleLeaveSession} />;
+  // ===== DÉCOUPE FROMAGE =====
+  if (module==="decoupe") {
+    if (!operator && !adminEmail) return <CodeLoginScreen moduleLabel="Découpe fromage" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
+    if (decView==="recap" && decRecapData) return <DecoupeRecap sessionId={decSessionId} operator={opObj} supplier={decSupplier} products={decRecapData.products} state={decRecapData.state} onClose={()=>setDecView("decoupe")} onLeave={handleDecoupeLeave} />;
+    if (decView==="decoupe" && decSessionId && decProducts.length>0) return <DecoupeScreen sessionId={decSessionId} operator={opObj} supplier={decSupplier} products={decProducts} onFinish={handleDecoupeFinish} onLeave={handleDecoupeLeave} />;
+    return <DecoupeHome operator={opObj} allDecoupe={allDecoupe} adminEmail={adminEmail} onJoin={handleDecoupeJoin} onOpenAdmin={()=>setModule("admin")} onBack={()=>setModule(null)} />;
+  }
 
-  if (view==="dispatch" && sessionId && products.length>0) return <DispatchScreen sessionId={sessionId} operator={operator} supplier={supplier} products={products} storeColumns={storeColumns} onFinish={handleFinish} onLeave={handleLeaveSession} />;
-
-  // Accueil par défaut
-  return <HomeScreen operator={operator} allSessions={allSessions} adminEmail={adminEmail} onJoinSession={handleJoinSession} onOpenAdmin={openAdmin} onOpenPalette={(code)=>{ setPaletteStore(code); setView("palette"); }} onLogout={handleLogout} onResetCache={handleResetCache} />;
+  return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} />;
 }
 
 try {
