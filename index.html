@@ -277,7 +277,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v4.3";
+const APP_VERSION = "v4.5";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -338,6 +338,32 @@ const FROMAGE_KBG_REF = [
   ["Saint-Nectaire Fermier AOP",200],["Sainte Maure Fermier AOP",250],["Selles sur Cher Fermier AOP",200],
   ["Tomme de Savoie Fermière IGP",200],["Comté AOP 18 mois",200],
 ];
+// Catalogue fournisseur UGALAIT (désignations telles qu'imprimées sur le BL).
+// Sert de liste de choix du nom de fromage dans la traçabilité, en plus des fromages
+// du BL réellement chargé par le responsable (console). Complète librement.
+const FROMAGE_UGALAIT_REF = [
+  "Bleu Brebis Regalis","Bleu de Laqueuille La Memee","Bleu du Vercors Sassenage AOP",
+  "Brie Meaux AOP St Faron 3/4 aff.","Brie Melun AOP St Faron 3/4 aff.","Brillat Savarin aff. 40%",
+  "Chaource AOP PM 250g","Chavignol AOP Blanc","Coeur Neufchâtel AOP AB","Comté 18M AOP Arnaud",
+  "Comté AOP Marcel Petite meule","Emmental Savoie 1/4","Fer à Cheval Chèvre Cendré",
+  "Fleur Maquis GM 700g","Fourme d'Ambert Fermière AOP","Gorgonzola Boggiani 1/8","Gouda aux Orties",
+  "Gouda de Chèvre Jeune","Gouda Villa Fumé","Morbier AOP 70J Crémier","Mothais sur Feuille 200g",
+  "Ossau Iraty Select AOP","Perail des Cabasses 150g","Picodon AOP O. de Serres","Pur Brebis au Piment",
+  "Rove des Garrigues","Saint Nectaire AOP Fermier","Sainte Maure AOP Touraine","Selles sur Cher AOP Fermier",
+  "St Félicien Nu 1er affinage","St Marcellin IGP Grand aff.","Tome Brebis Corse GM","Tome Provence LT Cru 100g",
+  "Tomme aux Fleurs Rebel Cheese","Trèfle du Perche",
+];
+// Liste de référence dédoublonnée des noms de fromage (KBG + Ugalait), triée alpha.
+const FROMAGE_NOMS_REF = (function(){
+  const seen=new Set(), out=[];
+  const norm=(d)=>(d||"").toString().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").trim();
+  FROMAGE_KBG_REF.map(r=>r[0]).concat(FROMAGE_UGALAIT_REF).forEach(d=>{
+    const k=norm(d);
+    if(d && !seen.has(k)){ seen.add(k); out.push(d); }
+  });
+  return out.sort((a,b)=>a.localeCompare(b,"fr"));
+})();
+
 const _KBG_STOP = new Set(["aop","aoc","igp","fermier","fermiere","bio","de","du","des","la","le","les","sur","d","grand","cru","a","au","1","2"]);
 function _kbgKey(s){ return String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(w=>w&&!_KBG_STOP.has(w)).join(" "); }
 const _KBGREF = FROMAGE_KBG_REF.map(r=>{ const k=_kbgKey(r[0]); return { poids:r[1], key:k, toks:k.split(" ").filter(Boolean) }; });
@@ -2604,7 +2630,18 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved, blNu
   const [photo, setPhoto] = useState(null);   // { b64, name }
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [manualNom, setManualNom] = useState(false); // saisie libre du nom (hors liste)
   const fileRef = useRef(null);
+  // Options du nom de fromage : d'abord le BL du jour (produits de la session),
+  // puis la liste de référence (KBG + Ugalait). Dédoublonné, trié.
+  const nomOptions = useMemo(() => {
+    const seen=new Set(), bl=[], ref=[];
+    const key=(d)=>stripAccents((d||"").toLowerCase()).trim();
+    (products||[]).forEach(p=>{ const d=(p.designation||"").trim(); const k=key(d); if(d&&!seen.has(k)){ seen.add(k); bl.push(d); } });
+    FROMAGE_NOMS_REF.forEach(d=>{ const k=key(d); if(!seen.has(k)){ seen.add(k); ref.push(d); } });
+    bl.sort((a,b)=>a.localeCompare(b,"fr"));
+    return { bl, ref };
+  }, [products]);
   useEffect(()=>{ if(blNumber && !bl) setBl(blNumber); }, [blNumber]);
   const ctrl = dlcControl(dlc, todayKey());
   const onPhoto = async (file) => {
@@ -2626,7 +2663,7 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved, blNu
     const tracaPath = sessionId ? `decoupe/${sessionId}/tracabilite` : `tracabilite/${todayKey()}`;
     if (firebaseReady) { const ref = db.ref(tracaPath).push(); await ref.set(entry).catch(()=>{}); }
     onSaved && onSaved(entry);
-    setBusy(false); setNom(""); setLot(""); setDlc(""); setPhoto(null); if (fileRef.current) fileRef.current.value="";
+    setBusy(false); setNom(""); setManualNom(false); setLot(""); setDlc(""); setPhoto(null); if (fileRef.current) fileRef.current.value="";
     if (!msg) setMsg("✓ Étiquette enregistrée" + (url?" (Drive)":""));
     setTimeout(()=>setMsg(""), 3000);
   };
@@ -2641,10 +2678,27 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved, blNu
           <div className="label">{photo?("Photo prête : "+photo.name):"Prendre / choisir la photo de l'étiquette"}</div>
           <div className="hint">l'app essaie de lire le lot ; sinon saisis-le à la main</div>
         </div>
-        <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>onPhoto(e.target.files[0])} />
-        <div className="field"><label>Nom du fromage</label>
-          <input list="fr-noms" value={nom} onChange={e=>setNom(e.target.value)} placeholder="Ex: Comté 18 mois" style={{width:"100%"}} />
-          <datalist id="fr-noms">{(products||[]).map((p,i)=><option key={i} value={p.designation} />)}</datalist>
+        <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>onPhoto(e.target.files[0])} />
+        <div className="field"><label>Nom du fromage {nomOptions.bl.length>0 && <span style={{color:"#1565c0",fontWeight:700}}>· {nomOptions.bl.length} sur le BL du jour</span>}</label>
+          {!manualNom ? (
+            <select value={nom} onChange={e=>{ if(e.target.value==="__manual__"){ setManualNom(true); setNom(""); } else setNom(e.target.value); }} style={{width:"100%"}}>
+              <option value="">— Choisir le fromage —</option>
+              {nomOptions.bl.length>0 && (
+                <optgroup label="🧀 BL du jour">
+                  {nomOptions.bl.map((d,i)=><option key={"b"+i} value={d}>{d}</option>)}
+                </optgroup>
+              )}
+              <optgroup label="Référence fromages">
+                {nomOptions.ref.map((d,i)=><option key={"r"+i} value={d}>{d}</option>)}
+              </optgroup>
+              <option value="__manual__">➕ Autre — saisir à la main…</option>
+            </select>
+          ) : (
+            <div style={{display:"flex", gap:6}}>
+              <input value={nom} onChange={e=>setNom(e.target.value)} placeholder="Nom du fromage (saisie libre)" style={{flex:1}} autoFocus />
+              <button type="button" className="btn-secondary" style={{width:"auto", padding:"0 14px", marginTop:0}} onClick={()=>{ setManualNom(false); setNom(""); }}>Liste</button>
+            </div>
+          )}
         </div>
         <div style={{display:"flex", gap:8}}>
           <div className="field" style={{flex:1}}><label>N° de BL (palette)</label><input value={bl} onChange={e=>setBl(e.target.value)} placeholder="Ex: 46222" style={{width:"100%"}} /></div>
@@ -2712,9 +2766,9 @@ function ReceptionPanel({ sessionId, operator, products, state, onSetRow, bls })
         <h3>📄 Bon de livraison</h3>
         <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Si le BL n'a pas été chargé par la console, photographie-le ici (archivé au Drive). Puis vérifie ci-dessous que tout a bien été reçu.</p>
         <div className="upload-zone" onClick={()=>fileRef.current&&fileRef.current.click()}>
-          <div className="icon">📷</div><div className="label">Photographier le BL</div><div className="hint">.jpg / .png</div>
+          <div className="icon">📷</div><div className="label">Photographier ou choisir le BL</div><div className="hint">appareil photo ou galerie · .jpg / .png</div>
         </div>
-        <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>onBL(e.target.files[0])} />
+        <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>onBL(e.target.files[0])} />
         {msg && <div style={{fontSize:12, marginTop:10, padding:8, borderRadius:6, background:msg[0]==="✓"?"#e8f5e9":"#fff3e0", color:msg[0]==="✓"?"#2e7d32":"#bf6000"}}>{msg}</div>}
         {blList.length>0 && <div style={{marginTop:8, fontSize:12, color:"#555"}}>{blList.length} photo(s) de BL · {blList.filter(b=>b.url).map((b,i)=><a key={i} href={b.url} target="_blank" rel="noreferrer" style={{marginRight:8}}>📷</a>)}</div>}
       </div>
