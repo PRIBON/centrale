@@ -277,7 +277,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v4.2";
+const APP_VERSION = "v4.3";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -354,11 +354,11 @@ function kbgRefPoids(designation){
 // ⚠️ Nécessite une action Apps Script "upload-tracabilite" côté serveur
 //    (crée le dossier "Traçabilité fromage/<magasin>" et y range la photo).
 // Best-effort : en cas d'échec on garde quand même la saisie dans Firebase.
-async function uploadTracabilite({ base64, filename, magasin, nom, lot, dlc, operatorCode }) {
+async function uploadTracabilite({ base64, filename, magasin, nom, lot, dlc, bl, dlcWrite, dlcEti, decoupeDate, operatorCode }) {
   try {
     const r = await fetch(CODE_VERIFY_URL, {
       method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
-      body:JSON.stringify({ action:"upload-tracabilite", folder:TRACA_ROOT_FOLDER, magasin, nom, lot, dlc, filename, base64, operatorCode })
+      body:JSON.stringify({ action:"upload-tracabilite", folder:TRACA_ROOT_FOLDER, magasin, nom, lot, dlc, bl, dlcWrite, dlcEti, decoupeDate, filename, base64, operatorCode })
     });
     const j = await r.json();
     return { ok:!!(j&&j.url), url:(j&&j.url)||"" };
@@ -431,6 +431,22 @@ const fmtDuration = (ms) => {
   return `${s}s`;
 };
 const todayKey = () => { const d=new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; };
+// Contrôle DLC découpe : la balance imprime une DLC à J+30 ; si la DLC réelle du fromage est plus
+// proche, il faut écrire la vraie DLC À LA MAIN sur l'étiquette.
+const DECOUPE_ETIQ_JOURS = 30;   // durée par défaut imprimée par la balance
+const DLC_ALERTE_JOURS   = 15;   // seuil d'alerte "peu de jours restants"
+const addDaysISO = (iso, n) => { const d = iso ? new Date(iso+"T00:00:00") : new Date(); if(isNaN(d)) return ""; d.setDate(d.getDate()+n); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; };
+const daysBetweenISO = (aIso, bIso) => { const a=new Date((aIso||todayKey())+"T00:00:00"), b=new Date((bIso||todayKey())+"T00:00:00"); if(isNaN(a)||isNaN(b)) return null; return Math.round((b-a)/86400000); };
+const frDateFR = (iso) => { if(!iso) return ""; const p=String(iso).split("-"); return p.length===3?(p[2]+"/"+p[1]+"/"+p[0]):iso; };
+// Contrôle DLC pour une DLC réelle (iso) au jour de découpe (iso, défaut aujourd'hui).
+function dlcControl(realIso, cutIso){
+  const cut = cutIso || todayKey();
+  const eti = addDaysISO(cut, DECOUPE_ETIQ_JOURS);       // DLC que la balance imprimerait (J+30)
+  if(!realIso) return { eti, write:eti, handwrite:false, daysLeft:null, short:false };
+  const realBeforeEti = daysBetweenISO(realIso, eti) > 0; // eti après la DLC réelle -> réelle plus proche
+  const daysLeft = daysBetweenISO(cut, realIso);
+  return { eti, write: realBeforeEti ? realIso : eti, handwrite: realBeforeEti, daysLeft, short: (daysLeft!=null && daysLeft < DLC_ALERTE_JOURS) };
+}
 const keyOfTs = (ts) => { const d=new Date(ts); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; };
 const fmtDateKey = (k) => { if(!k) return ""; const [y,m,d]=k.split("-"); return new Date(+y,+m-1,+d).toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"}); };
 const stripAccents = (s) => (s||"").normalize("NFD").replace(/[̀-ͯ]/g,"");
@@ -2579,15 +2595,18 @@ function pushDecoupeRecap(sessionId, products, state, operator, entity) {
 /* =========================================================================
    DÉCOUPE FROMAGE — Traçabilité (photo étiquette + lot + DLC + magasin -> Drive)
    ========================================================================= */
-function TracabilitePanel({ sessionId, operator, products, labels, onSaved }) {
+function TracabilitePanel({ sessionId, operator, products, labels, onSaved, blNumber }) {
   const [nom, setNom] = useState("");
   const [lot, setLot] = useState("");
   const [dlc, setDlc] = useState("");
+  const [bl, setBl] = useState(blNumber||"");
   const [magasin, setMagasin] = useState("KBG");
   const [photo, setPhoto] = useState(null);   // { b64, name }
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const fileRef = useRef(null);
+  useEffect(()=>{ if(blNumber && !bl) setBl(blNumber); }, [blNumber]);
+  const ctrl = dlcControl(dlc, todayKey());
   const onPhoto = async (file) => {
     if (!file) return;
     try { const b64 = await fileToBase64(file); setPhoto({ b64, name:file.name||"etiquette.jpg" }); }
@@ -2598,11 +2617,12 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved }) {
     setBusy(true); setMsg("");
     let url = "";
     if (photo) {
-      const res = await uploadTracabilite({ base64:photo.b64, filename:photo.name, magasin, nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), operatorCode:operator.code });
+      const res = await uploadTracabilite({ base64:photo.b64, filename:photo.name, magasin, nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), bl:bl.trim(), dlcWrite:ctrl.write, dlcEti:ctrl.eti, decoupeDate:todayKey(), operatorCode:operator.code });
       url = res.url || "";
       if (!res.ok) setMsg("⚠️ Photo non envoyée au Drive (serveur) — saisie conservée. " + (res.error||""));
     }
-    const entry = { nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), magasin, photoUrl:url, at:Date.now(), by:operator.name||("#"+operator.code) };
+    const entry = { nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), bl:bl.trim(), magasin, photoUrl:url,
+      dlcWrite:ctrl.write, dlcEti:ctrl.eti, handwrite:ctrl.handwrite, daysLeft:ctrl.daysLeft, at:Date.now(), by:operator.name||("#"+operator.code) };
     const tracaPath = sessionId ? `decoupe/${sessionId}/tracabilite` : `tracabilite/${todayKey()}`;
     if (firebaseReady) { const ref = db.ref(tracaPath).push(); await ref.set(entry).catch(()=>{}); }
     onSaved && onSaved(entry);
@@ -2627,9 +2647,18 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved }) {
           <datalist id="fr-noms">{(products||[]).map((p,i)=><option key={i} value={p.designation} />)}</datalist>
         </div>
         <div style={{display:"flex", gap:8}}>
+          <div className="field" style={{flex:1}}><label>N° de BL (palette)</label><input value={bl} onChange={e=>setBl(e.target.value)} placeholder="Ex: 46222" style={{width:"100%"}} /></div>
           <div className="field" style={{flex:1}}><label>N° de lot</label><input value={lot} onChange={e=>setLot(e.target.value)} style={{width:"100%"}} /></div>
-          <div className="field" style={{flex:1}}><label>DLC</label><input type="date" value={dlc} onChange={e=>setDlc(e.target.value)} style={{width:"100%"}} /></div>
         </div>
+        <div className="field"><label>DLC réelle du fromage (sur l'étiquette d'origine)</label><input type="date" value={dlc} onChange={e=>setDlc(e.target.value)} style={{width:"100%"}} /></div>
+        {dlc && (
+          <div style={{margin:"0 0 12px", padding:10, borderRadius:8, border:`1.5px solid ${ctrl.handwrite?(ctrl.short?"#e53935":"#fb8c00"):"#a5d6a7"}`, background:ctrl.handwrite?(ctrl.short?"#fdecea":"#fff3e0"):"#e8f5e9"}}>
+            <div style={{fontSize:12, color:"#555"}}>Balance (imprime J+30) : <b>{frDateFR(ctrl.eti)}</b> · DLC réelle : <b>{frDateFR(dlc)}</b>{ctrl.daysLeft!=null?` · ${ctrl.daysLeft} j restants`:""}</div>
+            {ctrl.handwrite
+              ? <div style={{fontSize:15, fontWeight:800, color:ctrl.short?"#c62828":"#e65100", marginTop:4}}>✍️ Écrire la DLC À LA MAIN : <u>{frDateFR(ctrl.write)}</u>{ctrl.short?" ⚠ moins de 15 jours !":""}<div style={{fontSize:12, fontWeight:600, marginTop:2}}>(la balance mettrait {frDateFR(ctrl.eti)}, c'est trop long)</div></div>
+              : <div style={{fontSize:14, fontWeight:700, color:"#2e7d32", marginTop:4}}>✓ Étiquette balance OK ({frDateFR(ctrl.eti)})</div>}
+          </div>
+        )}
         <div className="field"><label>Magasin destinataire</label>
           <div style={{display:"flex", gap:8}}>
             {FROMAGE_ENTITES.map(e=>(
@@ -2644,8 +2673,9 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved }) {
         <h3>Étiquettes enregistrées ({list.length})</h3>
         {list.length===0 && <div style={{fontSize:13, color:"#999"}}>Aucune pour l'instant.</div>}
         {list.map((l,i)=>(
-          <div className="recap-stat" key={i}>
-            <span className="label">{l.nom||"(sans nom)"} {l.lot?`· lot ${l.lot}`:""} {l.dlc?`· DLC ${l.dlc}`:""} {l.photoUrl?<a href={l.photoUrl} target="_blank" rel="noreferrer">📷</a>:""}</span>
+          <div className="recap-stat" key={i} style={{alignItems:"flex-start"}}>
+            <span className="label">{l.nom||"(sans nom)"} {l.bl?`· BL ${l.bl}`:""} {l.lot?`· lot ${l.lot}`:""} {l.dlc?`· DLC ${frDateFR(l.dlc)}`:""} {l.photoUrl?<a href={l.photoUrl} target="_blank" rel="noreferrer">📷</a>:""}
+              {l.handwrite && <div style={{fontSize:11, fontWeight:800, color:l.daysLeft!=null&&l.daysLeft<15?"#c62828":"#e65100"}}>✍️ écrire DLC {frDateFR(l.dlcWrite)} à la main{l.daysLeft!=null&&l.daysLeft<15?" ⚠":""}</div>}</span>
             <span className="value" style={{color:l.magasin==="KBG"?"#1565c0":"#6a1b9a"}}>{l.magasin}</span>
           </div>
         ))}
@@ -2851,7 +2881,7 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
       </div>
 
       {tab==="traca" && (
-        <TracabilitePanel sessionId={sessionId} operator={operator} products={products} labels={labels} />
+        <TracabilitePanel sessionId={sessionId} operator={operator} products={products} labels={labels} blNumber={meta&&meta.docNumber} />
       )}
       {tab==="reception" && (
         <ReceptionPanel sessionId={sessionId} operator={operator} products={list} state={state} onSetRow={setRow} bls={bls} />
