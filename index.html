@@ -277,7 +277,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v4.6";
+const APP_VERSION = "v4.7";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -512,6 +512,13 @@ const productKey = (p, idx) => {
   const code = (p.article||"").toString().trim();
   if (code) return `a_${code}`;
   return `l_${idx}`;
+};
+
+// Clé découpe basée sur la DÉSIGNATION normalisée : aligne un fromage ajouté à la main
+// par l'opérateur et le même fromage poussé via le BL (rapprochement découpe libre ↔ BL).
+const frKey = (p, idx) => {
+  const d = stripAccents(((p&&p.designation)||"").toLowerCase()).replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
+  return d ? ("d_"+d) : ("l_"+idx);
 };
 
 // Colisage : nb d'unités par carton (colis). 0/1 = vendu à l'unité.
@@ -2517,9 +2524,11 @@ function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
 /* =========================================================================
    DÉCOUPE FROMAGE — accueil (rejoindre une session)
    ========================================================================= */
-function DecoupeHome({ operator, allDecoupe, onJoin, onBack, onLogout }) {
+function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }) {
   const [view, setView] = useState("home"); // home | traca
   const [labels, setLabels] = useState({});
+  const [startEnt, setStartEnt] = useState("ROB");
+  const [startBl, setStartBl] = useState("");
   useEffect(() => {
     if (!firebaseReady) return;
     const ref = db.ref(`tracabilite/${todayKey()}`);
@@ -2568,9 +2577,24 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onBack, onLogout }) {
           <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Avant de découper : prends en photo l'étiquette de chaque fromage (n° de lot, DLC) et indique le magasin. Archivé au Drive Pribon.</p>
           <button className="btn-cut" onClick={()=>setView("traca")}>🏷️ Ouvrir la traçabilité</button>
         </div>
+        {/* Découpe du jour LIBRE : commencer sans attendre le BL (rapprochement auto par n° BL). */}
+        <div className="recap-card" style={{border:"1.5px solid #8a5a00"}}>
+          <h3>🔪 Démarrer une découpe du jour</h3>
+          <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Pas besoin d'attendre le BL. Choisis l'entité, mets le n° de BL si tu le connais (sinon plus tard), et ajoute tes fromages au fur et à mesure.</p>
+          <div style={{display:"flex", gap:8, marginBottom:8}}>
+            {[["ROB","Robespierre (Montreuil)"],["KBG","Kelbongoo"]].map(([c,lbl])=>(
+              <button key={c} onClick={()=>setStartEnt(c)} className="btn-secondary" style={{flex:1, background:startEnt===c?(c==="KBG"?"#1565c0":"#6a1b9a"):"#f0f0f0", color:startEnt===c?"#fff":"#333", fontWeight:700}}>{lbl}</button>
+            ))}
+          </div>
+          <div style={{display:"flex", gap:8, alignItems:"flex-end"}}>
+            <div style={{flex:1}}><label style={{fontSize:11, fontWeight:700, color:"#666"}}>N° de BL (si connu)</label>
+              <input value={startBl} onChange={e=>setStartBl(e.target.value)} placeholder="Ex: 41270" style={{width:"100%", padding:10, border:"1.5px solid #ddd", borderRadius:8, fontSize:15}} /></div>
+            <button className="btn-cut" style={{flex:1, marginTop:0}} onClick={()=>onStart(startEnt, startBl)}>Commencer</button>
+          </div>
+        </div>
         <div className="recap-card">
           <h3>🧀 Rejoindre une découpe en cours</h3>
-          {active.length===0 && <div style={{fontSize:13, color:"#888", padding:"6px 0"}}>Aucune découpe en cours. L'admin charge le BL / la découpe dans la console.</div>}
+          {active.length===0 && <div style={{fontSize:13, color:"#888", padding:"6px 0"}}>Aucune découpe en cours. Démarre-en une ci-dessus, ou l'admin charge le BL dans la console.</div>}
           {active.map(s => (
             <button key={s.id} className="btn-secondary" style={{textAlign:"left", padding:14, marginTop:6}} onClick={()=>onJoin(s.id)}>
               <div style={{fontWeight:700, marginBottom:2}}>{s.supplier||"Découpe"}</div>
@@ -2618,7 +2642,7 @@ const rendement = (kbgG, robG) => { const t=kbgG+robG; return t>0 ? Math.round(k
 // Bilan complet d'une session de découpe (utilisé pour le récap ET le suivi console via /recap).
 function decoupeTotals(products, state) {
   let kbgN=0,kbgG=0,robN=0,robG=0,robMeules=0,done=0; const lines=[];
-  (products||[]).forEach((p,idx)=>{ const st=(state&&state[productKey(p,idx)])||{}; const a=frAggFull(p,st);
+  (products||[]).forEach((p,idx)=>{ const st=(state&&state[frKey(p,idx)])||{}; const a=frAggFull(p,st);
     kbgN+=a.kbgN; kbgG+=a.kbgG; robN+=a.robN; robG+=a.robG; robMeules+=a.robMeules||0; if(st.done) done++;
     if (a.total>0 || st.reception) lines.push({ designation:p.designation, article:p.article, poids:p.poids, tol:p.tol, kbgTarget:p.kbgTarget, robCmd:p.robCmd, sticker:!!st.sticker,
       robMeules:a.robMeules||0, robUnit:(st.rob&&st.rob.unit)||"meule", reception:st.reception||"", ...a }); });
@@ -2917,7 +2941,21 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
     ref.on("value", h); return () => ref.off("value", h);
   }, [sessionId]);
 
-  const list = useMemo(() => products.map((p,idx)=>{ const rp=kbgRefPoids(p.designation); return {...p, poids:(rp>0?rp:(p.poids||FROMAGE_DEFAULT_POIDS)), _pkey:productKey(p,idx)}; }).sort((a,b)=>a.designation.localeCompare(b.designation,"fr")), [products]);
+  // Découpe libre : la liste vient du BL (meta.products, poussé par la console) sinon des produits passés.
+  // L'opérateur peut ajouter un fromage à la volée ; le rapprochement avec le BL se fait par frKey (désignation).
+  const [newFr, setNewFr] = useState("");
+  const srcProducts = (meta && Array.isArray(meta.products) && meta.products.length) ? meta.products : products;
+  const addFromage = () => {
+    const nom = (newFr||"").trim(); if(!nom) return;
+    const exists = srcProducts.some(p=>frKey(p,0)===frKey({designation:nom},0));
+    if(exists){ setNewFr(""); return; }
+    const rp = kbgRefPoids(nom);
+    const np = { article:"", designation:nom, fournisseur:"", robCmd:0, kbgTarget:0, poids:(rp>0?rp:FROMAGE_DEFAULT_POIDS), tol:FROMAGE_DEFAULT_TOL };
+    const next = [...srcProducts, np];
+    if (firebaseReady && sessionId) db.ref(`decoupe/${sessionId}/meta/products`).set(next);
+    setNewFr("");
+  };
+  const list = useMemo(() => srcProducts.map((p,idx)=>{ const rp=kbgRefPoids(p.designation); return {...p, poids:(rp>0?rp:(p.poids||FROMAGE_DEFAULT_POIDS)), _pkey:frKey(p,idx)}; }).sort((a,b)=>a.designation.localeCompare(b.designation,"fr")), [srcProducts]);
   const filtered = useMemo(() => { const q=search.trim(); if(!q) return list; return list.filter(p=>smartMatch(p.designation,q)||(p.article||"").includes(q)); }, [list, search]);
   const stats = useMemo(() => { const total=list.length; const done=list.filter(p=>state[p._pkey]&&state[p._pkey].done).length; return { total, done }; }, [list, state]);
   // Entité de la session (poussée par la console) : ROB = Montreuil (au poids, meules), KBG = Kelbongoo (pesée précise).
@@ -2968,7 +3006,14 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
             {isRob
               ? <div style={{fontSize:12, color:"#6a1b9a", background:"#f3e5f5", border:"1px solid #ce93d8", borderRadius:8, padding:"8px 10px", margin:"2px 2px 10px"}}>🟣 <b>Pribon Robespierre (Montreuil)</b> — vendu au poids. Pour chaque fromage, indique la <b>fraction de meule / colis découpée</b> (¼ ½ 1) et le <b>nombre de morceaux</b>. Pas de pesée.</div>
               : <div style={{fontSize:12, color:"#1565c0", background:"#e3f2fd", border:"1px solid #90caf9", borderRadius:8, padding:"8px 10px", margin:"2px 2px 10px"}}>🔵 <b>Kelbongoo</b> — poids précis. Pèse chaque pièce : dans la tolérance → Kelbongoo, hors gabarit → Robespierre. Le rendement se calcule tout seul.</div>}
-            {filtered.length===0 && <div style={{textAlign:"center", padding:40, color:"#999"}}>Aucun fromage.</div>}
+            {/* Découpe libre : ajouter un fromage (choisi dans la liste de référence ou saisi à la main). */}
+            <div style={{display:"flex", gap:6, margin:"0 2px 10px"}}>
+              <input list="fr-add-noms" value={newFr} onChange={e=>setNewFr(e.target.value)} placeholder="➕ Ajouter un fromage à découper…" style={{flex:1, padding:10, border:"1.5px solid #8a5a00", borderRadius:8, fontSize:14}} />
+              <datalist id="fr-add-noms">{FROMAGE_NOMS_REF.map((d,i)=><option key={i} value={d} />)}</datalist>
+              <button onClick={addFromage} disabled={!newFr.trim()} style={{padding:"10px 16px", borderRadius:8, background:newFr.trim()?"#8a5a00":"#ccc", color:"#fff", fontWeight:800, fontSize:14, border:"none"}}>Ajouter</button>
+            </div>
+            {meta&&meta.docNumber?<div style={{fontSize:11, color:"#777", margin:"0 2px 8px"}}>Lié au BL <b>n°{meta.docNumber}</b></div>:<div style={{fontSize:11, color:"#e65100", margin:"0 2px 8px"}}>⚠ Aucun n° BL sur cette découpe — le rapprochement se fera quand le BL sera chargé.</div>}
+            {filtered.length===0 && <div style={{textAlign:"center", padding:40, color:"#999"}}>Aucun fromage. Ajoute-en un ci-dessus, ou attends le BL.</div>}
             {filtered.map(p => {
               const st = state[p._pkey]||{}; const agg = frAggFull(p, st); const isDone = st.done;
               const rec = st.reception;
@@ -3083,7 +3128,7 @@ function generateFromageBL(supplier, products, state, entity) {
   doc.text("Date : "+new Date().toLocaleDateString("fr-FR"), 14, y); y+=8;
   const rows = [];
   products.forEach((p,idx) => {
-    const st = state[productKey(p,idx)]||{}; const agg = frAggFull(p, st);
+    const st = state[frKey(p,idx)]||{}; const agg = frAggFull(p, st);
     if (entity==="KBG") { if (agg.kbgN>0) rows.push([ p.designation, String(agg.kbgN), Math.round(agg.kbgG)+" g" ]); }
     else { // Robespierre : meules/colis + morceaux + kg approx
       if (agg.robN>0 || agg.robMeules>0) { const unit=(st.rob&&st.rob.unit)||"meule"; const kg=agg.robG>0?(Math.round(agg.robG/1000*10)/10+" kg"):"—";
@@ -3689,6 +3734,23 @@ function App() {
     if (!firebaseReady) return;
     db.ref(`decoupe/${sid}/meta`).once("value").then(snap => { const m=snap.val(); if(m){ setDecSessionId(sid); setDecSupplier(m.supplier||"Découpe"); setDecProducts(m.products||[]); setDecEntity(m.entity||""); setDecView("decoupe"); } });
   };
+  // Découpe du jour LIBRE : l'opérateur commence sans BL. Session clé sur le n° BL (bl_<ent>_<num>) pour
+  // converger avec le BL poussé par la console, sinon session « du jour ». .update pour ne pas écraser un BL déjà chargé.
+  const handleDecoupeStartLibre = (entity, blNum) => {
+    if (!firebaseReady) return;
+    const ent = (entity||"ROB").toUpperCase();
+    const bl = (blNum||"").toString().trim();
+    const sid = bl ? ("bl_"+ent.toLowerCase()+"_"+bl.replace(/[^a-zA-Z0-9]/g,"")) : ("jour_"+ent.toLowerCase()+"_"+todayKey().replace(/-/g,"")+"_"+Date.now().toString(36));
+    const supLabel = (ent==="KBG"?"Découpe Kelbongoo":"Découpe Robespierre")+(bl?(" · BL "+bl):" · du jour");
+    db.ref(`decoupe/${sid}/meta`).once("value").then(snap => {
+      const m=snap.val();
+      if(m){ setDecSessionId(sid); setDecSupplier(m.supplier||supLabel); setDecProducts(m.products||[]); setDecEntity(m.entity||ent); setModule("decoupe"); setDecView("decoupe"); }
+      else {
+        db.ref(`decoupe/${sid}/meta`).update({ supplier:supLabel, entity:ent, docNumber:bl, startedAt:Date.now(), products:[], createdBy:opName, libre:true });
+        setDecSessionId(sid); setDecSupplier(supLabel); setDecProducts([]); setDecEntity(ent); setModule("decoupe"); setDecView("decoupe");
+      }
+    });
+  };
   const handleDecoupeFinish = (state, pk) => { setDecRecapData({ state, products:pk }); setDecView("recap"); };
   const handleDecoupeLeave = () => { setDecSessionId(""); setDecSupplier(""); setDecProducts([]); setDecEntity(""); setDecRecapData(null); setDecView("home"); };
 
@@ -3741,8 +3803,8 @@ function App() {
   if (module==="decoupe") {
     if (!operator) return <CodeLoginScreen moduleLabel="Découpe fromage" moduleKey="decoupe" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
     if (decView==="recap" && decRecapData) return <DecoupeRecap sessionId={decSessionId} operator={opObj} supplier={decSupplier} entity={decEntity} products={decRecapData.products} state={decRecapData.state} onClose={()=>setDecView("decoupe")} onLeave={handleDecoupeLeave} />;
-    if (decView==="decoupe" && decSessionId && decProducts.length>0) return <DecoupeScreen sessionId={decSessionId} operator={opObj} supplier={decSupplier} products={decProducts} onFinish={handleDecoupeFinish} onLeave={handleDecoupeLeave} />;
-    return <DecoupeHome operator={opObj} allDecoupe={allDecoupe} onJoin={handleDecoupeJoin} onBack={()=>setModule(null)} onLogout={logout} />;
+    if (decView==="decoupe" && decSessionId) return <DecoupeScreen sessionId={decSessionId} operator={opObj} supplier={decSupplier} products={decProducts} onFinish={handleDecoupeFinish} onLeave={handleDecoupeLeave} />;
+    return <DecoupeHome operator={opObj} allDecoupe={allDecoupe} onJoin={handleDecoupeJoin} onStart={handleDecoupeStartLibre} onBack={()=>setModule(null)} onLogout={logout} />;
   }
 
   return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} operator={operator} onLogout={logout} />;
