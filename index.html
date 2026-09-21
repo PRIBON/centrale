@@ -2693,6 +2693,47 @@ function pushDecoupeRecap(sessionId, products, state, operator, entity) {
   }).catch(()=>{});
 }
 
+// Clé de jour d'une session de découpe (date de démarrage).
+function decoupeDayKey(sess){ const t=(sess&&sess.meta&&sess.meta.startedAt)||0; if(!t) return ""; const d=new Date(t); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
+
+/* Bilan CONSOLIDÉ d'une journée : agrège TOUTES les sessions de découpe du jour
+   (Kelbongoo + Montreuil, tous les BL, découpe libre) → un seul récap à envoyer.
+   Chaque session garde son entité ; les fromages sont fusionnés par désignation. */
+function dayDecoupeAgg(allDecoupe, dateKey) {
+  const kbgMap = {}, robMap = {}; const sessions = [];
+  let kbgN=0,kbgG=0,kbgTheo=0,kbgMontreuilG=0, robMeules=0,robN=0,robG=0;
+  Object.entries(allDecoupe||{}).forEach(([sid,s]) => {
+    if (!s || !s.meta || !s.meta.startedAt) return;
+    const d = new Date(s.meta.startedAt); const dk = `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+    if (dk !== dateKey) return;
+    const prods = (s.meta.products)||[]; const st = s.state||{};
+    const t = decoupeTotals(prods, st);
+    if ((t.lines||[]).length===0 && !(t.kbgN||t.robN||t.robMeules)) return; // session vide → ignorée
+    const ent = ((s.recap&&s.recap.entity)||s.meta.entity||"").toUpperCase();
+    const routeRob = ent==="ROB" ? true : (ent==="KBG" ? false : null); // null = session sans entité → on route au fromage
+    sessions.push({ id:sid, entity:ent, supplier:s.meta.supplier||"", docNumber:s.meta.docNumber||"", by:(s.recap&&s.recap.by)||s.meta.createdBy||"" });
+    (t.lines||[]).forEach(l => {
+      const key = stripAccents((l.designation||"").toLowerCase()).replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"") || (l.article||l.designation||"?");
+      const isRob = routeRob!=null ? routeRob : (((l.kbgN||0)===0) && (((l.robN||0)>0) || ((l.robMeules||0)>0)));
+      if (isRob) {
+        const m = robMap[key] || (robMap[key] = { designation:l.designation||"", robMeules:0, robN:0, robG:0, robUnit:l.robUnit||"meule" });
+        m.robMeules += (l.robMeules||0); m.robN += (l.robN||0); m.robG += (l.robG||0);
+        robMeules += (l.robMeules||0); robN += (l.robN||0); robG += (l.robG||0);
+      } else {
+        const m = kbgMap[key] || (kbgMap[key] = { designation:l.designation||"", kbgN:0, kbgG:0, theo:0, montreuilG:0, poidsRecu:0 });
+        m.kbgN += (l.kbgN||0); m.kbgG += (l.kbgG||0); m.theo += (l.theo||0); m.montreuilG += (l.robG||0); m.poidsRecu += (l.poidsRecu||0);
+        kbgN += (l.kbgN||0); kbgG += (l.kbgG||0); kbgTheo += (l.theo||0); kbgMontreuilG += (l.robG||0);
+      }
+    });
+  });
+  const kbgLines = Object.values(kbgMap).map(m=>({ ...m, rend:(m.theo>0?Math.round(m.kbgN/m.theo*100):null) })).sort((a,b)=>a.designation.localeCompare(b.designation,"fr"));
+  const robLines = Object.values(robMap).sort((a,b)=>a.designation.localeCompare(b.designation,"fr"));
+  const rendPortions = kbgTheo>0 ? Math.round(kbgN/kbgTheo*100) : null;
+  return { sessions, kbgLines, robLines, kbgN, kbgG:Math.round(kbgG), kbgTheo, kbgMontreuilG:Math.round(kbgMontreuilG), rendPortions,
+           robMeules:Math.round(robMeules*100)/100, robN, robG:Math.round(robG),
+           hasKbg:kbgLines.length>0, hasRob:robLines.length>0 };
+}
+
 /* =========================================================================
    DÉCOUPE FROMAGE — Traçabilité (photo étiquette + lot + DLC + magasin -> Drive)
    ========================================================================= */
@@ -3015,7 +3056,10 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
   const isRob = (((meta&&meta.entity)||"").toUpperCase()==="ROB");
 
   // Résumé live vers la console (quantités découpées / rendement) à chaque changement.
-  useEffect(() => { pushDecoupeRecap(sessionId, products, state, operator, meta&&meta.entity); }, [sessionId, products, state, meta]);
+  // IMPORTANT : on pousse la liste RÉELLE affichée à l'opérateur (list = meta.products fusionnés,
+  // poids résolus), et non le prop `products` qui reste vide en découpe libre. Sans ça, un fromage
+  // ajouté à la volée (ex. Comté pour Kelbongoo) n'apparaissait ni dans le récap ni dans la console.
+  useEffect(() => { pushDecoupeRecap(sessionId, list, state, operator, meta&&meta.entity); }, [sessionId, list, state, meta]);
 
   const cutProduct = cutKey ? list.find(p=>p._pkey===cutKey) : null;
   if (cutProduct) {
@@ -3180,7 +3224,7 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
           </div>
           <div className="bottom-bar">
             <div className="stats"><span>Avancement: <b>{stats.done}/{stats.total}</b></span><span>{stats.total>0?Math.round((stats.done/stats.total)*100):0}%</span></div>
-            <button className="btn-finish" onClick={()=>{ if(stats.done===stats.total && stats.total>0) launchConfetti(); onFinish(state, list); }} disabled={stats.done===0} style={{background:"#8a5a00"}}>{stats.done===stats.total&&stats.total>0?"✓ Terminer et voir le bilan":`Voir le bilan (${stats.done} faits)`}</button>
+            <button className="btn-finish" onClick={()=>{ onFinish(state, list); }} disabled={stats.done===0} style={{background:"#8a5a00"}}>{stats.done===stats.total&&stats.total>0?"✓ Terminer → récap du jour":`Voir le récap du jour (${stats.done} faits)`}</button>
           </div>
         </>
       )}
@@ -3228,78 +3272,92 @@ function generateFromageBL(supplier, products, state, entity) {
   }
   doc.save(`Decoupe_${entity}_${(supplier||"").replace(/[^a-zA-Z0-9]/g,"")}_${new Date().toISOString().slice(0,10)}.pdf`);
 }
-function DecoupeRecap({ sessionId, operator, supplier, entity, products, state, onClose, onLeave }) {
+function DecoupeRecap({ sessionId, operator, supplier, entity, products, state, allDecoupe, onClose, onLeave }) {
   const [sent, setSent] = useState(false); const [sending, setSending] = useState(false); const [error, setError] = useState("");
-  const isRob = (entity||"").toUpperCase()==="ROB";
-  const totals = useMemo(() => decoupeTotals(products, state), [products, state]);
-  const kgApprox = totals.robG>0 ? Math.round(totals.robG/1000*10)/10 : 0;
-  const bravo = totals.rend>=FROMAGE_RENDEMENT_OK;
+  const dateKey = todayKey();
   const dateStr = new Date().toLocaleDateString("fr-FR");
+  // RÉCAP CONSOLIDÉ DE LA JOURNÉE : agrège toutes les sessions du jour (Kelbongoo + Montreuil,
+  // tous les BL, découpe libre). Un seul envoi de fin de journée au lieu d'un envoi par fromage/session.
+  const day = useMemo(() => dayDecoupeAgg(allDecoupe, dateKey), [allDecoupe, dateKey]);
+  const kgMontreuilKbg = day.kbgMontreuilG>0 ? Math.round(day.kbgMontreuilG/1000*10)/10 : 0;
+  const kgRob = day.robG>0 ? Math.round(day.robG/1000*10)/10 : 0;
+  const rp = day.rendPortions; const bravoP = rp!=null ? rp>=FROMAGE_RENDEMENT_OK : true;
+  const nbSessions = day.sessions.length;
+  const alreadySent = day.sessions.some(se=>{ const s=(allDecoupe||{})[se.id]; return s && s.recap && s.recap.daySentAt; });
   const send = async () => {
     setSending(true); setError("");
-    const payload = { action:"log-decoupe-recap", sessionId, supplier, entity:entity||"", operator:operator.name||("#"+operator.code), operatorCode:operator.code, brand:BRAND,
-      date:dateStr, at:new Date().toISOString(),
-      mailTo:DECOUPE_MAIL, subject:isRob?`Découpe Montreuil du ${dateStr}`:`Découpe Kelbongoo du ${dateStr}`,
+    const kbgOut = day.kbgLines.map(l=>({ entity:"KBG", designation:l.designation, kbgN:l.kbgN, kbgTheo:l.theo||0, rend:(l.rend!=null?l.rend:null), kbgG:Math.round(l.kbgG||0), robG:Math.round(l.montreuilG||0), poidsRecu:Math.round(l.poidsRecu||0) }));
+    const robOut = day.robLines.map(l=>({ entity:"ROB", designation:l.designation, robMeules:Math.round((l.robMeules||0)*100)/100, robN:l.robN||0, robG:Math.round(l.robG||0), robUnit:l.robUnit||"meule" }));
+    const payload = { action:"log-decoupe-recap", sessionId, journee:true, date:dateStr, dateKey, at:new Date().toISOString(),
+      operator:operator.name||("#"+operator.code), operatorCode:operator.code, brand:BRAND,
+      mailTo:DECOUPE_MAIL, subject:`Découpe du jour — ${dateStr}`,
       subjectKbg:`Découpe Kelbongoo du ${dateStr}`, subjectRob:`Découpe Montreuil du ${dateStr}`,
-      rendement:totals.rend, rendementPortions:(totals.rendPortions!=null?totals.rendPortions:null),
-      totals:{ kbgN:totals.kbgN, kbgTheo:totals.kbgTheo, kbgG:Math.round(totals.kbgG), robN:totals.robN, robG:Math.round(totals.robG), robMeules:Math.round(totals.robMeules*100)/100 },
-      lines:totals.lines.map(l=>({ designation:l.designation, article:l.article, kbgN:l.kbgN, kbgTheo:l.theo||0, rend:(l.rend!=null?l.rend:null), poidsRecu:l.poidsRecu||0, kbgTarget:l.kbgTarget, robN:l.robN, kbgG:Math.round(l.kbgG), robG:Math.round(l.robG), robMeules:Math.round((l.robMeules||0)*100)/100, robUnit:l.robUnit, robCmd:l.robCmd, sticker:l.sticker, reception:l.reception })) };
-    try { await fetch(APPS_SCRIPT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) }); setSent(true); }
-    catch(e){ setError(e.message); } finally { setSending(false); }
+      nbSessions, rendementPortions:(day.rendPortions!=null?day.rendPortions:null),
+      totals:{ kbgN:day.kbgN, kbgTheo:day.kbgTheo, kbgG:day.kbgG, kbgMontreuilG:day.kbgMontreuilG, robN:day.robN, robG:day.robG, robMeules:day.robMeules },
+      lines:[...kbgOut, ...robOut] };
+    try {
+      await fetch(APPS_SCRIPT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) });
+      // Marque toutes les sessions du jour comme « récap envoyé » (info pour la console).
+      if (firebaseReady) day.sessions.forEach(se=>{ db.ref(`decoupe/${se.id}/recap`).update({ daySentAt:Date.now(), daySentBy:operator.name||("#"+operator.code) }).catch(()=>{}); });
+      if (bravoP && day.hasKbg) { try{ launchConfetti(); }catch(e){} }
+      setSent(true);
+    } catch(e){ setError(e.message); } finally { setSending(false); }
   };
   return (
     <div className="app">
       <div className="header fr-head" style={{background:"#8a5a00"}}>
-        <div className="header-row"><div><h1>Bilan découpe {isRob?"Montreuil":"Kelbongoo"}</h1><div className="sub">{supplier} · {dateStr}</div></div>
+        <div className="header-row"><div><h1>Récap de la journée</h1><div className="sub">🧀 Découpe du {dateStr} · {nbSessions} découpe(s)</div></div>
           <div className="header-actions"><button className="header-btn" onClick={onClose}>← Retour</button></div></div>
       </div>
       <div className="recap-section">
-        {isRob ? (
-          <div className="recap-card" style={{textAlign:"center", background:"#f3e5f5", border:"1.5px solid #ce93d8"}}>
-            <div style={{fontSize:40, fontWeight:900, color:"#6a1b9a"}}>{totals.robMeules} <span style={{fontSize:18}}>meule(s)/colis</span></div>
-            <div style={{fontSize:15, fontWeight:800, color:"#6a1b9a"}}>{totals.robN} morceaux découpés{kgApprox>0?` · ≈ ${kgApprox} kg`:""}</div>
-            <div style={{fontSize:12, color:"#666", marginTop:4}}>Pribon Robespierre — vendu au poids</div>
-          </div>
-        ) : (() => { const rp=totals.rendPortions; const hasP=rp!=null; const bravoP=hasP?rp>=FROMAGE_RENDEMENT_OK:bravo; const shown=hasP?rp:totals.rend; return (
+        {!day.hasKbg && !day.hasRob && (
+          <div className="recap-card" style={{textAlign:"center", color:"#999", fontSize:14}}>Aucune découpe saisie aujourd'hui pour l'instant.</div>
+        )}
+        {day.hasKbg && (
           <div className="recap-card" style={{textAlign:"center", background:bravoP?"#e8f5e9":"#fff3e0", border:`1.5px solid ${bravoP?"#a5d6a7":"#ffcc80"}`}}>
-            <div style={{fontSize:44, fontWeight:900, color:bravoP?"#2e7d32":"#e65100"}}>{shown}%</div>
-            <div style={{fontSize:15, fontWeight:800, color:bravoP?"#2e7d32":"#e65100"}}>Rendement Kelbongoo — {bravoP?"bravo 👏":"peut mieux faire"}</div>
-            <div style={{fontSize:12, color:"#666", marginTop:4}}>{hasP?`${totals.kbgN} portions réelles / ${totals.kbgTheo} théoriques (d'après le poids reçu)`:"part du poids partie en portions Kelbongoo (le reste → Montreuil)"}</div>
+            <div style={{fontSize:44, fontWeight:900, color:bravoP?"#2e7d32":"#e65100"}}>{rp!=null?`${rp}%`:`${day.kbgN}`}</div>
+            <div style={{fontSize:15, fontWeight:800, color:bravoP?"#2e7d32":"#e65100"}}>{rp!=null?`Rendement Kelbongoo — ${bravoP?"bravo 👏":"peut mieux faire"}`:"portions Kelbongoo"}</div>
+            <div style={{fontSize:12, color:"#666", marginTop:4}}>{day.kbgN} portions réelles{day.kbgTheo>0?` / ${day.kbgTheo} théoriques`:""} · {Math.round(day.kbgG/1000*10)/10} kg{kgMontreuilKbg>0?` · ${kgMontreuilKbg} kg hors gabarit → Montreuil`:""}</div>
           </div>
-        ); })()}
+        )}
+        {day.hasRob && (
+          <div className="recap-card" style={{textAlign:"center", background:"#f3e5f5", border:"1.5px solid #ce93d8"}}>
+            <div style={{fontSize:40, fontWeight:900, color:"#6a1b9a"}}>{day.robMeules} <span style={{fontSize:18}}>meule(s)/colis</span></div>
+            <div style={{fontSize:15, fontWeight:800, color:"#6a1b9a"}}>{day.robN} morceaux découpés{kgRob>0?` · ≈ ${kgRob} kg`:""}</div>
+            <div style={{fontSize:12, color:"#666", marginTop:4}}>Pribon Robespierre / Montreuil — vendu au poids</div>
+          </div>
+        )}
+        {day.hasKbg && (
+          <div className="recap-card">
+            <h3>🔵 Kelbongoo — détail par fromage</h3>
+            {day.kbgLines.map((l,i)=>(
+              <div className="recap-stat" key={"k"+i}><span className="label">{l.designation}</span>
+                <span className="value">{l.kbgN} portions{l.theo>0?`/${l.theo} théo.`:""}{l.rend!=null?` · ${l.rend}%`:""}{l.montreuilG>0?` · ${Math.round(l.montreuilG/1000*10)/10} kg→Montreuil`:""}</span></div>
+            ))}
+          </div>
+        )}
+        {day.hasRob && (
+          <div className="recap-card">
+            <h3>🟣 Montreuil (Robespierre) — détail par fromage</h3>
+            {day.robLines.map((l,i)=>(
+              <div className="recap-stat" key={"r"+i}><span className="label">{l.designation}</span>
+                <span className="value">{l.robMeules} {l.robUnit==="colis"?"colis":"meule(s)"} · {l.robN} morceaux{l.robG>0?` · ≈ ${Math.round(l.robG/1000*10)/10} kg`:""}</span></div>
+            ))}
+          </div>
+        )}
         <div className="recap-card">
-          <h3>🧀 Bilan</h3>
-          {isRob ? (
-            <div className="tgt rob"><span className="big">{totals.robMeules}</span>meule(s)/colis · {totals.robN} morceaux{kgApprox>0?` · ≈ ${kgApprox} kg`:""}</div>
-          ) : (
-            <div style={{display:"flex", gap:12}}>
-              <div className="tgt kbg" style={{flex:1}}><span className="big">{totals.kbgN}</span>portions Kelbongoo{totals.kbgTheo>0?` · théo. ${totals.kbgTheo}`:""} · {Math.round(totals.kbgG/1000*10)/10} kg</div>
-              <div className="tgt rob" style={{flex:1}}><span className="big">{Math.round(totals.robG/1000*10)/10}</span>kg → Montreuil (hors gabarit)</div>
-            </div>
-          )}
-        </div>
-        <div className="recap-card">
-          <h3>Détail par fromage</h3>
-          {totals.lines.length===0 && <div style={{color:"#999", fontSize:13}}>Rien pour l'instant.</div>}
-          {totals.lines.map((l,i)=>(
-            <div className="recap-stat" key={i}><span className="label">{l.designation}{l.sticker?" 🏷️":""}{l.reception==="nonconf"?" ⚠":""}</span>
-              <span className="value">{isRob
-                ? `${Math.round((l.robG||0)/1000*10)/10} kg`
-                : `${l.kbgN} portions${l.theo>0?`/${l.theo} théo.`:""}${l.rend!=null?` · ${l.rend}%`:""}${l.robG>0?` · ${Math.round(l.robG/1000*10)/10} kg→Montreuil`:""}`}</span></div>
-          ))}
-        </div>
-        <div className="recap-card">
-          <h3>📄 Bon de livraison</h3>
-          <div style={{display:"grid", gridTemplateColumns:isRob?"1fr":"1fr 1fr", gap:8}}>
-            {!isRob && <button className="btn-secondary" onClick={()=>generateFromageBL(supplier, products, state, "KBG")}>BL Kelbongoo</button>}
+          <h3>📄 Bon de livraison — cette découpe</h3>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8}}>
+            <button className="btn-secondary" onClick={()=>generateFromageBL(supplier, products, state, "KBG")}>BL Kelbongoo</button>
             <button className="btn-secondary" onClick={()=>generateFromageBL(supplier, products, state, "ROB")}>BL Robespierre</button>
           </div>
         </div>
         <div className="recap-card">
-          <h3>📤 Valider & envoyer le bilan</h3>
-          <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Envoie le détail à <b>{DECOUPE_MAIL}</b> (objet « {isRob?"Découpe Montreuil":"Découpe Kelbongoo"} du {dateStr} ») et au suivi de la console.</p>
-          {!sent && <button className="btn-primary" onClick={send} disabled={sending} style={{background:"#8a5a00"}}>{sending?"Envoi…":"Valider la découpe & envoyer"}</button>}
-          {sent && <div style={{padding:12, background:"#e8f5e9", borderRadius:8, color:"#1a4d2e", fontWeight:600, textAlign:"center"}}>✓ Bilan envoyé !</div>}
+          <h3>📤 Clôturer la journée & envoyer le récap</h3>
+          <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Un <b>seul</b> envoi pour toute la journée (les {nbSessions} découpe(s) du jour, Kelbongoo + Montreuil) vers <b>{DECOUPE_MAIL}</b> et le suivi de la console. À faire une fois que <b>toutes</b> les découpes du jour sont terminées.</p>
+          {alreadySent && !sent && <div style={{padding:10, background:"#fff3e0", borderRadius:8, color:"#e65100", fontSize:13, marginBottom:8}}>⚠️ Un récap a déjà été envoyé aujourd'hui. Renvoyer met simplement le suivi à jour.</div>}
+          {!sent && <button className="btn-primary" onClick={send} disabled={sending||(!day.hasKbg&&!day.hasRob)} style={{background:"#8a5a00"}}>{sending?"Envoi…":`📤 Clôturer & envoyer le récap du jour`}</button>}
+          {sent && <div style={{padding:12, background:"#e8f5e9", borderRadius:8, color:"#1a4d2e", fontWeight:600, textAlign:"center"}}>✓ Récap de la journée envoyé !</div>}
           {error && <div style={{padding:12, background:"#ffebee", borderRadius:8, color:"#c62828", fontSize:13, marginTop:8}}>{error}</div>}
         </div>
         <div className="recap-card"><button className="btn-secondary" onClick={onLeave} style={{background:"#8a5a00", color:"#fff", fontWeight:600}}>← Quitter et revenir</button></div>
@@ -3880,7 +3938,7 @@ function App() {
   // ===== DÉCOUPE FROMAGE =====
   if (module==="decoupe") {
     if (!operator) return <CodeLoginScreen moduleLabel="Découpe fromage" moduleKey="decoupe" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
-    if (decView==="recap" && decRecapData) return <DecoupeRecap sessionId={decSessionId} operator={opObj} supplier={decSupplier} entity={decEntity} products={decRecapData.products} state={decRecapData.state} onClose={()=>setDecView("decoupe")} onLeave={handleDecoupeLeave} />;
+    if (decView==="recap" && decRecapData) return <DecoupeRecap sessionId={decSessionId} operator={opObj} supplier={decSupplier} entity={decEntity} products={decRecapData.products} state={decRecapData.state} allDecoupe={allDecoupe} onClose={()=>setDecView("decoupe")} onLeave={handleDecoupeLeave} />;
     if (decView==="decoupe" && decSessionId) return <DecoupeScreen sessionId={decSessionId} operator={opObj} supplier={decSupplier} products={decProducts} onFinish={handleDecoupeFinish} onLeave={handleDecoupeLeave} />;
     return <DecoupeHome operator={opObj} allDecoupe={allDecoupe} onJoin={handleDecoupeJoin} onStart={handleDecoupeStartLibre} onBack={()=>setModule(null)} onLogout={logout} />;
   }
