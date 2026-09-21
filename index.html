@@ -277,7 +277,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v4.8";
+const APP_VERSION = "v4.9";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -2535,6 +2535,11 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
   const [labels, setLabels] = useState({});
   const [startEnt, setStartEnt] = useState("ROB");
   const [startBl, setStartBl] = useState("");
+  // Supprime une découpe ouverte par erreur (ex. une ouverture par fromage). Retirée pour tout le monde.
+  const deleteDecoupe = (sid, label) => {
+    if (!confirm(`Supprimer la découpe « ${label||"Découpe"} » ?\n\nElle disparaîtra de la liste pour tout le monde. À n'utiliser que pour une découpe ouverte par erreur.`)) return;
+    if (firebaseReady && sid) db.ref(`decoupe/${sid}`).remove().catch(e=>alert("Erreur : "+e.message));
+  };
   useEffect(() => {
     if (!firebaseReady) return;
     const ref = db.ref(`tracabilite/${todayKey()}`);
@@ -2600,12 +2605,16 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
         </div>
         <div className="recap-card">
           <h3>🧀 Rejoindre une découpe en cours</h3>
+          <p style={{fontSize:11, color:"#999", margin:"0 0 8px"}}>Une seule découpe par jour et par entité (Kelbongoo / Montreuil) : rejoins celle du jour au lieu d'en rouvrir une nouvelle. Le 🗑 supprime une découpe ouverte par erreur.</p>
           {active.length===0 && <div style={{fontSize:13, color:"#888", padding:"6px 0"}}>Aucune découpe en cours. Démarre-en une ci-dessus, ou l'admin charge le BL dans la console.</div>}
           {active.map(s => (
-            <button key={s.id} className="btn-secondary" style={{textAlign:"left", padding:14, marginTop:6}} onClick={()=>onJoin(s.id)}>
-              <div style={{fontWeight:700, marginBottom:2}}>{s.supplier||"Découpe"}</div>
-              <div style={{fontSize:11, color:"#666"}}>Démarré à {fmtTime(s.startedAt)} • {s.done}/{s.total} fromages faits</div>
-            </button>
+            <div key={s.id} style={{display:"flex", gap:6, alignItems:"stretch", marginTop:6}}>
+              <button className="btn-secondary" style={{textAlign:"left", padding:14, margin:0, flex:1}} onClick={()=>onJoin(s.id)}>
+                <div style={{fontWeight:700, marginBottom:2}}>{s.supplier||"Découpe"}</div>
+                <div style={{fontSize:11, color:"#666"}}>Démarré à {fmtTime(s.startedAt)} • {s.done}/{s.total} fromages faits</div>
+              </button>
+              <button onClick={()=>deleteDecoupe(s.id, s.supplier)} title="Supprimer cette découpe" style={{width:52, background:"#fdecea", color:"#c62828", border:"1.5px solid #ffcdd2", borderRadius:8, fontSize:18, fontWeight:700}}>🗑</button>
+            </div>
           ))}
         </div>
         <div style={{padding:"0 4px"}}>
@@ -2968,20 +2977,40 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
   // Découpe libre : la liste vient du BL (meta.products, poussé par la console) sinon des produits passés.
   // L'opérateur peut ajouter un fromage à la volée ; le rapprochement avec le BL se fait par frKey (désignation).
   const [newFr, setNewFr] = useState("");
+  const [addManual, setAddManual] = useState(false); // saisie libre du nom (hors liste)
   const srcProducts = (meta && Array.isArray(meta.products) && meta.products.length) ? meta.products : products;
-  const addFromage = () => {
-    const nom = (newFr||"").trim(); if(!nom) return;
+  const addFromage = (nomArg) => {
+    const nom = ((nomArg!=null?nomArg:newFr)||"").trim(); if(!nom) return;
     const exists = srcProducts.some(p=>frKey(p,0)===frKey({designation:nom},0));
-    if(exists){ setNewFr(""); return; }
+    if(exists){ setNewFr(""); setAddManual(false); return; }
     const rp = kbgRefPoids(nom);
     const np = { article:"", designation:nom, fournisseur:"", robCmd:0, kbgTarget:0, poids:(rp>0?rp:FROMAGE_DEFAULT_POIDS), tol:FROMAGE_DEFAULT_TOL };
     const next = [...srcProducts, np];
     if (firebaseReady && sessionId) db.ref(`decoupe/${sessionId}/meta/products`).set(next);
-    setNewFr("");
+    setNewFr(""); setAddManual(false);
   };
   const list = useMemo(() => srcProducts.map((p,idx)=>{ const rp=kbgRefPoids(p.designation); return {...p, poids:(rp>0?rp:(p.poids||FROMAGE_DEFAULT_POIDS)), _pkey:frKey(p,idx)}; }).sort((a,b)=>a.designation.localeCompare(b.designation,"fr")), [srcProducts]);
   const filtered = useMemo(() => { const q=search.trim(); if(!q) return list; return list.filter(p=>smartMatch(p.designation,q)||(p.article||"").includes(q)); }, [list, search]);
   const stats = useMemo(() => { const total=list.length; const done=list.filter(p=>state[p._pkey]&&state[p._pkey].done).length; return { total, done }; }, [list, state]);
+  // Fromages déjà dans la liste (pour ne pas les reproposer à l'ajout).
+  const presentKeys = useMemo(() => new Set(list.map(p=>p._pkey)), [list]);
+  // Options du menu déroulant d'ajout : dernier BL connu (mémorisé) + liste de référence, hors fromages déjà présents.
+  // Menu <select> natif : fiable sur toutes les tablettes (la datalist ne marchait pas sur certaines).
+  const addOptions = useMemo(() => {
+    const seen=new Set(), bl=[], ref=[];
+    const nk=(d)=>stripAccents((d||"").toLowerCase()).trim();
+    let lastBl=[]; try { lastBl=JSON.parse(localStorage.getItem("centrale_last_bl_fromages")||"[]"); } catch(e){}
+    lastBl.forEach(d=>{ const k=nk(d); if(d&&!seen.has(k)&&!presentKeys.has(frKey({designation:d},0))){ seen.add(k); bl.push(d); } });
+    FROMAGE_NOMS_REF.forEach(d=>{ const k=nk(d); if(!seen.has(k)&&!presentKeys.has(frKey({designation:d},0))){ seen.add(k); ref.push(d); } });
+    bl.sort((a,b)=>a.localeCompare(b,"fr"));
+    return { bl, ref };
+  }, [presentKeys]);
+  // Mémorise la liste des fromages du dernier BL réellement chargé, pour la reproposer à l'ajout (même hors ligne / nouveau jour).
+  useEffect(() => {
+    if (meta && meta.docNumber && Array.isArray(meta.products) && meta.products.length) {
+      try { localStorage.setItem("centrale_last_bl_fromages", JSON.stringify(meta.products.map(p=>p.designation).filter(Boolean))); } catch(e){}
+    }
+  }, [meta]);
   // Entité de la session (poussée par la console) : ROB = Montreuil (au poids, meules), KBG = Kelbongoo (pesée précise).
   const isRob = (((meta&&meta.entity)||"").toUpperCase()==="ROB");
 
@@ -3030,11 +3059,29 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
             {isRob
               ? <div style={{fontSize:12, color:"#6a1b9a", background:"#f3e5f5", border:"1px solid #ce93d8", borderRadius:8, padding:"8px 10px", margin:"2px 2px 10px"}}>🟣 <b>Pribon Robespierre (Montreuil)</b> — vendu au poids. On se fiche des portions : indique juste le <b>poids total envoyé (kg)</b> pour chaque fromage.</div>
               : <div style={{fontSize:12, color:"#1565c0", background:"#e3f2fd", border:"1px solid #90caf9", borderRadius:8, padding:"8px 10px", margin:"2px 2px 10px"}}>🔵 <b>Kelbongoo</b> — portions de poids fixe. Coupe dans la fourchette affichée, saisis le <b>nombre de portions</b> et les <b>kg partis à Montreuil</b> (hors gabarit). Le rendement se calcule tout seul.</div>}
-            {/* Découpe libre : ajouter un fromage (choisi dans la liste de référence ou saisi à la main). */}
-            <div style={{display:"flex", gap:6, margin:"0 2px 10px"}}>
-              <input list="fr-add-noms" value={newFr} onChange={e=>setNewFr(e.target.value)} placeholder="➕ Ajouter un fromage à découper…" style={{flex:1, padding:10, border:"1.5px solid #8a5a00", borderRadius:8, fontSize:14}} />
-              <datalist id="fr-add-noms">{FROMAGE_NOMS_REF.map((d,i)=><option key={i} value={d} />)}</datalist>
-              <button onClick={addFromage} disabled={!newFr.trim()} style={{padding:"10px 16px", borderRadius:8, background:newFr.trim()?"#8a5a00":"#ccc", color:"#fff", fontWeight:800, fontSize:14, border:"none"}}>Ajouter</button>
+            {/* Ajouter un fromage à découper : menu déroulant fiable (dernier BL connu + référence), ou saisie à la main.
+                Remplace la datalist qui ne s'ouvrait pas sur certaines tablettes. */}
+            <div style={{margin:"0 2px 10px"}}>
+              {!addManual ? (
+                <select value="" onChange={e=>{ const v=e.target.value; if(v==="__manual__"){ setAddManual(true); setNewFr(""); } else if(v){ addFromage(v); } }} style={{width:"100%", padding:11, border:"1.5px solid #8a5a00", borderRadius:8, fontSize:15, fontWeight:600, background:"#fff", color:"#8a5a00"}}>
+                  <option value="">➕ Ajouter un fromage à découper…</option>
+                  {addOptions.bl.length>0 && (
+                    <optgroup label="🧀 Dernier BL connu">
+                      {addOptions.bl.map((d,i)=><option key={"b"+i} value={d}>{d}</option>)}
+                    </optgroup>
+                  )}
+                  <optgroup label="Référence fromages">
+                    {addOptions.ref.map((d,i)=><option key={"r"+i} value={d}>{d}</option>)}
+                  </optgroup>
+                  <option value="__manual__">➕ Autre — saisir à la main…</option>
+                </select>
+              ) : (
+                <div style={{display:"flex", gap:6}}>
+                  <input value={newFr} onChange={e=>setNewFr(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") addFromage(); }} placeholder="Nom du fromage (saisie libre)" autoFocus style={{flex:1, padding:10, border:"1.5px solid #8a5a00", borderRadius:8, fontSize:14}} />
+                  <button onClick={()=>addFromage()} disabled={!newFr.trim()} style={{padding:"10px 16px", borderRadius:8, background:newFr.trim()?"#8a5a00":"#ccc", color:"#fff", fontWeight:800, fontSize:14, border:"none"}}>Ajouter</button>
+                  <button onClick={()=>{ setAddManual(false); setNewFr(""); }} style={{padding:"10px 12px", borderRadius:8, background:"#f0f0f0", color:"#555", fontWeight:600, fontSize:13, border:"none"}}>Liste</button>
+                </div>
+              )}
             </div>
             {meta&&meta.docNumber?<div style={{fontSize:11, color:"#777", margin:"0 2px 8px"}}>Lié au BL <b>n°{meta.docNumber}</b></div>:<div style={{fontSize:11, color:"#e65100", margin:"0 2px 8px"}}>⚠ Aucun n° BL sur cette découpe — le rapprochement se fera quand le BL sera chargé.</div>}
             {filtered.length===0 && <div style={{textAlign:"center", padding:40, color:"#999"}}>Aucun fromage. Ajoute-en un ci-dessus, ou attends le BL.</div>}
@@ -3064,14 +3111,6 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
                       <button key={lbl} onClick={()=>addMeule(f,lbl)} style={{flex:1, padding:12, borderRadius:6, border:`1.5px solid ${rob.type===lbl?"#6a1b9a":"#ce93d8"}`, background:rob.type===lbl?"#6a1b9a":"#fff", color:rob.type===lbl?"#fff":"#6a1b9a", fontSize:15, fontWeight:800}}>+{lbl}</button>
                     ))}
                     <button onClick={()=>setRow(p._pkey,{rob:{...rob, meules:0, type:"libre"}})} title="Réinitialiser" style={{padding:"12px 12px", borderRadius:6, border:"1.5px solid #ddd", background:"#fafafa", color:"#c62828", fontSize:15, fontWeight:700}}>↺</button>
-                  </div>
-                  <div style={{display:"flex", gap:6, alignItems:"flex-end", marginBottom:6}}>
-                    <div style={{flex:1.3}}><label style={{fontSize:11, fontWeight:700, color:"#666"}}>Libre (nb de meules/colis)</label>
-                      <input type="number" inputMode="decimal" min="0" step="0.25" value={rob.meules!=null?rob.meules:""} onChange={e=>setRow(p._pkey,{rob:{...rob, meules:e.target.value===""?0:(parseFloat(String(e.target.value).replace(",","."))||0), type:"libre"}})} placeholder="0" style={{width:"100%", padding:8, border:"1.5px solid #ce93d8", borderRadius:6, fontSize:16, fontWeight:800, textAlign:"center", color:"#6a1b9a"}} /></div>
-                    <div style={{flex:1}}><label style={{fontSize:11, fontWeight:700, color:"#666"}}>Unité</label>
-                      <div style={{display:"flex", gap:4}}>
-                        {[["meule","Meule"],["colis","Colis"]].map(([u,lbl])=>(<button key={u} onClick={()=>setRow(p._pkey,{rob:{...rob, unit:u}})} style={{flex:1, padding:8, borderRadius:6, fontSize:12, fontWeight:700, background:robUnit===u?"#6a1b9a":"#eef2f7", color:robUnit===u?"#fff":"#333"}}>{lbl}</button>))}
-                      </div></div>
                   </div>
                   <div style={{display:"flex", gap:6, alignItems:"flex-end", marginBottom:6}}>
                     <div style={{flex:1}}><label style={{fontSize:11, fontWeight:800, color:"#6a1b9a"}}>Poids total envoyé à Montreuil (kg)</label>
@@ -3777,7 +3816,9 @@ function App() {
     if (!firebaseReady) return;
     const ent = (entity||"ROB").toUpperCase();
     const bl = (blNum||"").toString().trim();
-    const sid = bl ? ("bl_"+ent.toLowerCase()+"_"+bl.replace(/[^a-zA-Z0-9]/g,"")) : ("jour_"+ent.toLowerCase()+"_"+todayKey().replace(/-/g,"")+"_"+Date.now().toString(36));
+    // Une SEULE découpe « du jour » par entité et par date : sid déterministe (sans horodatage aléatoire).
+    // Rouvrir « du jour » pour la même entité le même jour rejoint la même découpe au lieu d'en créer une nouvelle.
+    const sid = bl ? ("bl_"+ent.toLowerCase()+"_"+bl.replace(/[^a-zA-Z0-9]/g,"")) : ("jour_"+ent.toLowerCase()+"_"+todayKey().replace(/-/g,""));
     const supLabel = (ent==="KBG"?"Découpe Kelbongoo":"Découpe Robespierre")+(bl?(" · BL "+bl):" · du jour");
     db.ref(`decoupe/${sid}/meta`).once("value").then(snap => {
       const m=snap.val();
