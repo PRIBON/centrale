@@ -429,6 +429,56 @@ async function uploadTracabilite({ base64, filename, magasin, nom, lot, dlc, bl,
 function fileToBase64(file) {
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result)); r.onerror=rej; r.readAsDataURL(file); });
 }
+// Compresse une photo (réduit la taille pour l'envoi ET la sauvegarde locale hors ligne).
+function compressImageB64(dataUrl, maxDim, quality){
+  maxDim=maxDim||1280; quality=(quality!=null?quality:0.6);
+  return new Promise((resolve)=>{
+    try{
+      const img=new Image();
+      img.onload=()=>{ try{
+        let w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+        const scale=Math.min(1, maxDim/Math.max(w,h||1));
+        const cw=Math.max(1,Math.round(w*scale)), ch=Math.max(1,Math.round(h*scale));
+        const cv=document.createElement("canvas"); cv.width=cw; cv.height=ch;
+        cv.getContext("2d").drawImage(img,0,0,cw,ch);
+        resolve(cv.toDataURL("image/jpeg", quality));
+      }catch(e){ resolve(dataUrl); } };
+      img.onerror=()=>resolve(dataUrl);
+      img.src=dataUrl;
+    }catch(e){ resolve(dataUrl); }
+  });
+}
+/* File d'attente LOCALE des photos de traçabilité : quand il n'y a pas d'internet, la photo est
+   gardée sur l'appareil et renvoyée au Drive dès le retour de la connexion (auto ou bouton). */
+const TRACA_Q_KEY="traca_photo_queue";
+function tracaQueueGet(){ try{ const a=JSON.parse(localStorage.getItem(TRACA_Q_KEY)||"[]"); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
+function tracaQueueSet(a){ try{ localStorage.setItem(TRACA_Q_KEY, JSON.stringify(a||[])); }catch(e){} }
+function tracaQueueCount(){ return tracaQueueGet().length; }
+function tracaQueueAdd(item){ const a=tracaQueueGet(); a.push(item); tracaQueueSet(a); }
+function tracaQueueRemove(id){ tracaQueueSet(tracaQueueGet().filter(x=>x.id!==id)); }
+let __tracaFlushing=false;
+async function flushTracaQueue(){
+  if(__tracaFlushing) return { done:0, remaining:tracaQueueCount() };
+  if(typeof navigator!=="undefined" && navigator.onLine===false) return { done:0, remaining:tracaQueueCount() };
+  __tracaFlushing=true; let done=0;
+  try{
+    const q=tracaQueueGet();
+    for(const it of q){
+      try{
+        const res=await uploadTracabilite(it.payload||{});
+        if(res && res.ok && res.url){
+          // traça utilise photoUrl, la photo de BL utilise url : on met les deux (sans risque).
+          if(firebaseReady && it.path && it.key){ try{ await db.ref(it.path+"/"+it.key).update({ photoUrl:res.url, url:res.url, pendingPhoto:false }); }catch(e){} }
+          tracaQueueRemove(it.id); done++;
+        }
+      }catch(e){ /* on garde pour un prochain essai */ }
+    }
+  } finally { __tracaFlushing=false; }
+  try{ window.dispatchEvent(new CustomEvent("traca-queue-changed")); }catch(e){}
+  return { done, remaining:tracaQueueCount() };
+}
+// Envoi automatique dès que la connexion revient, même hors de l'écran traçabilité.
+try{ window.addEventListener("online", ()=>{ setTimeout(flushTracaQueue, 1500); }); }catch(e){}
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDtcoRoknYM4JrJJfcuhpnVMeS-OurwYdU",
@@ -2824,6 +2874,25 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved, blNu
   const [msg, setMsg] = useState("");
   const [manualNom, setManualNom] = useState(false); // saisie libre du nom (hors liste)
   const fileRef = useRef(null);
+  // Connexion + file d'attente photos (traçabilité hors ligne)
+  const [online, setOnline] = useState(typeof navigator!=="undefined" ? navigator.onLine!==false : true);
+  const [pending, setPending] = useState(tracaQueueCount());
+  const [flushing, setFlushing] = useState(false);
+  useEffect(() => {
+    const refreshQ = ()=>setPending(tracaQueueCount());
+    window.addEventListener("traca-queue-changed", refreshQ);
+    let connRef=null, onConn=null;
+    if (firebaseReady) {
+      connRef = db.ref(".info/connected");
+      onConn = (snap)=>{ const c=!!snap.val(); setOnline(c); if(c){ flushTracaQueue().then(r=>setPending(r.remaining)); } };
+      connRef.on("value", onConn);
+    }
+    const onWinOn = ()=>{ setOnline(true); flushTracaQueue().then(r=>setPending(r.remaining)); };
+    const onWinOff = ()=>setOnline(false);
+    window.addEventListener("online", onWinOn); window.addEventListener("offline", onWinOff);
+    return () => { window.removeEventListener("traca-queue-changed", refreshQ); if(connRef&&onConn) connRef.off("value", onConn); window.removeEventListener("online", onWinOn); window.removeEventListener("offline", onWinOff); };
+  }, []);
+  const flushPhotos = async () => { setFlushing(true); const r = await flushTracaQueue(); setPending(r.remaining); setFlushing(false); setMsg(r.done>0?`✓ ${r.done} photo(s) envoyée(s) au Drive`:(r.remaining>0?"Toujours hors ligne — réessaie une fois connecté.":"")); setTimeout(()=>setMsg(""),3500); };
   // Options du nom de fromage : d'abord le BL du jour (produits de la session),
   // puis la liste de référence (KBG + Ugalait). Dédoublonné, trié.
   const nomOptions = useMemo(() => {
@@ -2844,24 +2913,50 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved, blNu
   const save = async () => {
     if (!nom.trim() && !photo) { setMsg("Ajoute au moins une photo ou le nom du fromage."); return; }
     setBusy(true); setMsg("");
-    let url = "";
-    if (photo) {
-      const res = await uploadTracabilite({ base64:photo.b64, filename:photo.name, magasin, nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), bl:bl.trim(), dlcWrite:ctrl.write, dlcEti:ctrl.eti, decoupeDate:todayKey(), operatorCode:operator.code });
-      url = res.url || "";
-      if (!res.ok) setMsg("⚠️ Photo non envoyée au Drive (serveur) — saisie conservée. " + (res.error||""));
-    }
-    const entry = { nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), bl:bl.trim(), magasin, photoUrl:url,
-      dlcWrite:ctrl.write, dlcEti:ctrl.eti, handwrite:ctrl.handwrite, daysLeft:ctrl.daysLeft, at:Date.now(), by:operator.name||("#"+operator.code) };
     const tracaPath = sessionId ? `decoupe/${sessionId}/tracabilite` : `tracabilite/${todayKey()}`;
-    if (firebaseReady) { const ref = db.ref(tracaPath).push(); await ref.set(entry).catch(()=>{}); }
+    // On compresse la photo (envoi + sauvegarde locale plus légers).
+    let photoB64 = photo ? photo.b64 : "";
+    if (photoB64) { try { photoB64 = await compressImageB64(photoB64); } catch(e){} }
+    const isOnline = (typeof navigator!=="undefined") ? navigator.onLine!==false : true;
+    let url = "", pendingPhoto = false;
+    if (photoB64 && isOnline) {
+      const res = await uploadTracabilite({ base64:photoB64, filename:(photo&&photo.name)||"etiquette.jpg", magasin, nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), bl:bl.trim(), dlcWrite:ctrl.write, dlcEti:ctrl.eti, decoupeDate:todayKey(), operatorCode:operator.code });
+      url = res.url || "";
+      if (!res.ok) pendingPhoto = true;   // échec serveur → on met en file d'attente
+    } else if (photoB64) {
+      pendingPhoto = true;                 // hors ligne → file d'attente
+    }
+    const entry = { nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), bl:bl.trim(), magasin, photoUrl:url, pendingPhoto,
+      dlcWrite:ctrl.write, dlcEti:ctrl.eti, handwrite:ctrl.handwrite, daysLeft:ctrl.daysLeft, at:Date.now(), by:operator.name||("#"+operator.code) };
+    // IMPORTANT : pas de `await` sur ref.set() — hors ligne la promesse ne se résout jamais (ça bloquait l'app).
+    // L'écriture est mise en cache par Firebase et partira au retour du réseau.
+    let key = "";
+    if (firebaseReady) { const ref = db.ref(tracaPath).push(); key = ref.key || ""; ref.set(entry).catch(()=>{}); }
+    // Photo en attente : on la garde sur l'appareil pour l'envoyer au Drive plus tard.
+    if (pendingPhoto && photoB64) {
+      tracaQueueAdd({ id:key||("t_"+Date.now()), path:tracaPath, key, at:Date.now(),
+        payload:{ base64:photoB64, filename:(photo&&photo.name)||"etiquette.jpg", magasin, nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), bl:bl.trim(), dlcWrite:ctrl.write, dlcEti:ctrl.eti, decoupeDate:todayKey(), operatorCode:operator.code } });
+      setPending(tracaQueueCount());
+    }
     onSaved && onSaved(entry);
     setBusy(false); setNom(""); setManualNom(false); setLot(""); setDlc(""); setPhoto(null); if (fileRef.current) fileRef.current.value="";
-    if (!msg) setMsg("✓ Étiquette enregistrée" + (url?" (Drive)":""));
-    setTimeout(()=>setMsg(""), 3000);
+    setMsg(pendingPhoto ? "✓ Étiquette gardée sur l'appareil — la photo partira au retour d'internet" : ("✓ Étiquette enregistrée" + (url?" (Drive)":"")));
+    setTimeout(()=>setMsg(""), 3500);
   };
   const list = Object.values(labels||{}).sort((a,b)=>(b.at||0)-(a.at||0));
   return (
     <div style={{padding:12, paddingBottom:110}}>
+      {!online && (
+        <div style={{background:"#c62828", color:"#fff", padding:"10px 12px", borderRadius:10, marginBottom:12, fontWeight:700, fontSize:13}}>
+          📴 Pas d'internet — la photo est gardée sur cette tablette et partira <b>automatiquement</b> au retour du réseau. Tu peux continuer à travailler.
+        </div>
+      )}
+      {pending>0 && (
+        <div style={{background:"#fff3e0", border:"1.5px solid #ffcc80", color:"#bf6000", padding:"10px 12px", borderRadius:10, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, flexWrap:"wrap"}}>
+          <div style={{fontSize:13, fontWeight:700}}>📤 {pending} photo(s) en attente d'envoi au Drive</div>
+          <button onClick={flushPhotos} disabled={flushing||!online} style={{background:online?"#8a5a00":"#bbb", color:"#fff", border:"none", borderRadius:8, padding:"8px 12px", fontWeight:800, fontSize:13, whiteSpace:"nowrap"}}>{flushing?"Envoi…":(online?"📤 Envoyer maintenant":"En attente d'internet")}</button>
+        </div>
+      )}
       <div className="recap-card">
         <h3>🏷️ Étiquette du fromage à découper</h3>
         <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Photographie l'étiquette (lot / DLC). Si tu peux, complète les champs. La photo est rangée dans le Drive <b>Traçabilité fromage / {entiteLabel(magasin)}</b>.</p>
@@ -2920,7 +3015,7 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved, blNu
         {list.length===0 && <div style={{fontSize:13, color:"#999"}}>Aucune pour l'instant.</div>}
         {list.map((l,i)=>(
           <div className="recap-stat" key={i} style={{alignItems:"flex-start"}}>
-            <span className="label">{l.nom||"(sans nom)"} {l.bl?`· BL ${l.bl}`:""} {l.lot?`· lot ${l.lot}`:""} {l.dlc?`· DLC ${frDateFR(l.dlc)}`:""} {l.photoUrl?<a href={l.photoUrl} target="_blank" rel="noreferrer">📷</a>:""}
+            <span className="label">{l.nom||"(sans nom)"} {l.bl?`· BL ${l.bl}`:""} {l.lot?`· lot ${l.lot}`:""} {l.dlc?`· DLC ${frDateFR(l.dlc)}`:""} {l.photoUrl?<a href={l.photoUrl} target="_blank" rel="noreferrer">📷</a>:(l.pendingPhoto?<span style={{color:"#bf6000",fontWeight:700}}>📷⏳ en attente</span>:"")}
               {l.handwrite && <div style={{fontSize:11, fontWeight:800, color:l.daysLeft!=null&&l.daysLeft<15?"#c62828":"#e65100"}}>✍️ écrire DLC {frDateFR(l.dlcWrite)} à la main{l.daysLeft!=null&&l.daysLeft<15?" ⚠":""}</div>}</span>
             <span className="value" style={{color:l.magasin==="KBG"?"#1565c0":"#6a1b9a"}}>{l.magasin}</span>
           </div>
@@ -2940,13 +3035,22 @@ function ReceptionPanel({ sessionId, operator, products, state, onSetRow, bls })
   const onBL = async (file) => {
     if (!file) return; setBusy(true); setMsg("");
     try {
-      const b64 = await fileToBase64(file);
-      const res = await uploadTracabilite({ base64:b64, filename:file.name||"BL.jpg", magasin:"BL", nom:"BL", lot:"", dlc:"", operatorCode:operator.code });
-      if (firebaseReady && sessionId) { const ref = db.ref(`decoupe/${sessionId}/bl`).push(); await ref.set({ url:res.url||"", at:Date.now(), by:operator.name||("#"+operator.code) }).catch(()=>{}); }
-      setMsg(res.ok ? "✓ BL enregistré (Drive)" : "⚠️ BL non envoyé au Drive (serveur) — réessaie.");
+      let b64 = await fileToBase64(file);
+      try { b64 = await compressImageB64(b64); } catch(e){}
+      const isOnline = (typeof navigator!=="undefined") ? navigator.onLine!==false : true;
+      const path = `decoupe/${sessionId}/bl`;
+      let key = "", url = "", pendingPhoto = false;
+      if (isOnline) {
+        const res = await uploadTracabilite({ base64:b64, filename:file.name||"BL.jpg", magasin:"BL", nom:"BL", lot:"", dlc:"", operatorCode:operator.code });
+        url = res.url || ""; if(!res.ok) pendingPhoto = true;
+      } else { pendingPhoto = true; }
+      // pas d'await sur set() (bloque hors ligne) : Firebase met en cache et envoie au retour du réseau.
+      if (firebaseReady && sessionId) { const ref = db.ref(path).push(); key = ref.key||""; ref.set({ url, pendingPhoto, at:Date.now(), by:operator.name||("#"+operator.code) }).catch(()=>{}); }
+      if (pendingPhoto) { tracaQueueAdd({ id:key||("bl_"+Date.now()), path, key, at:Date.now(), payload:{ base64:b64, filename:file.name||"BL.jpg", magasin:"BL", nom:"BL", lot:"", dlc:"", operatorCode:operator.code } }); }
+      setMsg(pendingPhoto ? "✓ BL gardé — partira au retour d'internet" : "✓ BL enregistré (Drive)");
     } catch(e){ setMsg("Photo illisible."); }
     setBusy(false); if (fileRef.current) fileRef.current.value="";
-    setTimeout(()=>setMsg(""), 3000);
+    setTimeout(()=>setMsg(""), 3500);
   };
   const list = products;
   const nb = { ok:0, nc:0, todo:0 };
