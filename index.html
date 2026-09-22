@@ -294,7 +294,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.2";
+const APP_VERSION = "v5.3";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -3701,6 +3701,8 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
   const [scanMode, setScanMode] = useState("select"); // select = scan → popup quantité (défaut) ; bottle = 1 scan +1 bouteille
   const [showCam, setShowCam] = useState(false);
   const [toast, setToast] = useState("");
+  const [showMissing, setShowMissing] = useState(false); // popup des vins non comptés (inventaire ciblé)
+  const [linkQuery, setLinkQuery] = useState("");        // recherche pour lier un scan inconnu à la liste
   const scanRef = useRef(null);
   const focusScan = () => { setTimeout(()=>{ if (scanRef.current) scanRef.current.focus(); }, 30); };
   useEffect(()=>{ focusScan(); }, []);
@@ -3752,6 +3754,22 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
       flash("🍾 +1 bouteille");
       setActiveKey(key);
       setScan(""); focusScan();
+    } else if (isCible) {
+      // Inventaire CIBLÉ : on relie le scan à la liste du fournisseur.
+      const known = eanMap[ean];
+      if (known && refByCode[String(known)]) {
+        // EAN déjà connu → on ouvre directement le vin de la liste.
+        const key = "r_" + known; const rw = refByCode[String(known)];
+        if (!lines[key]) writeLine(key, { ean, code:String(known), designation:rw.designation||"", bottles:0, cartons:0 });
+        else writeLine(key, { ean });
+        setActiveKey(key); setEditKey(key);
+      } else {
+        // EAN inconnu → ligne à lier (la popup proposera la liste du fournisseur).
+        const key = "s_" + Date.now() + "_" + Math.random().toString(36).slice(2,7);
+        writeLine(key, { ean, bottles:0, cartons:0, needsLink:true });
+        setActiveKey(key); setEditKey(key); setLinkQuery("");
+      }
+      setScan("");
     } else {
       // Mode « Scan → quantité » : CHAQUE scan crée une NOUVELLE ligne, même si le
       // code-barres a déjà été scanné (c'est PROGMAG/G5 qui fusionnera les codes ensuite).
@@ -3786,11 +3804,43 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
   const totalUnits = arr.reduce((s,l)=>s+uOf(l), 0);
   const refs = arr.filter(l=>uOf(l)>0).length;
 
-  const cloturer = () => {
-    if (!confirm("Clôturer cet inventaire ?\n\nLa validation et la génération du .txt (pour PROGMAG) se font ensuite dans la console responsable.")) return;
+  // ---- Inventaire CIBLÉ (liste de référence poussée par la console) ----
+  const isCible  = !!meta.cible;
+  const refList  = Array.isArray(meta.ref) ? meta.ref : [];
+  const eanMap   = meta.eanMap || {};
+  const refByCode = {}; refList.forEach(r=>{ if(r&&r.code!=null) refByCode[String(r.code)] = r; });
+  // Un vin de la liste est "compté" s'il existe une ligne avec ce code (unités>0 ou explicitement pointé à 0).
+  const countedCodes = {}; arr.forEach(l=>{ if(l.code!=null && l.code!=="" && (uOf(l)>0 || l.counted)) countedCodes[String(l.code)] = true; });
+  const missingRefs = refList.filter(r => !countedCodes[String(r.code)]);
+  const cibleCounted = refList.length - missingRefs.length;
+  const learnEan = (ean, code) => {
+    if (!ean) return;
+    if (firebaseReady) db.ref(`inventaire_vin/${invId}/meta/eanMap/${ean}`).set(code);
+    else setLocalInv(d => ({ ...d, meta:{ ...(d.meta||{}), eanMap:{ ...((d.meta||{}).eanMap||{}), [ean]:code } } }));
+  };
+  // Pointe un vin de la liste (par code) à une quantité (bouteilles). counted:true => exporté même à 0.
+  const setRefQty = (code, qty) => {
+    const rw = refByCode[String(code)] || {};
+    writeLine("r_"+code, { code:String(code), designation:rw.designation||"", ean:"", cartons:0, bottles:Math.max(0,Math.floor(Number(qty)||0)), counted:true });
+  };
+  // Lie une ligne scannée (EAN inconnu) à un vin de la liste + mémorise le lien pour la prochaine fois.
+  const linkScanToRef = (key, code) => {
+    const ln = lines[key] || {}; const rw = refByCode[String(code)] || {};
+    writeLine(key, { code:String(code), designation:rw.designation||"", needsLink:false });
+    if (ln.ean) learnEan(ln.ean, code);
+    setLinkQuery("");
+  };
+
+  const doClose = () => {
     if (firebaseReady) db.ref(`inventaire_vin/${invId}/meta/closed`).set(true);
     else setLocalInv(d => ({ ...d, meta:{ ...(d.meta||{}), closed:true } }));
     onLeave();
+  };
+  const cloturer = () => {
+    // Inventaire ciblé : avant de clôturer, on montre les vins non comptés (popup 0 / quantité retrouvée).
+    if (isCible && missingRefs.length > 0) { setShowMissing(true); return; }
+    if (!confirm("Clôturer cet inventaire ?\n\nLa validation et la génération du .txt (pour PROGMAG) se font ensuite dans la console responsable.")) return;
+    doClose();
   };
   const rename = () => {
     const n = prompt("Nom de l'inventaire :", meta.label || "Inventaire vin");
@@ -3804,7 +3854,7 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
     <div className="app">
       <div className="header" style={{background:"#7b1e3a"}}>
         <div className="header-row">
-          <div><h1 onClick={rename} style={{cursor:"pointer"}}>🍷 {meta.label||"Inventaire vin"} ✎</h1><div className="sub">{refs} réf. · {totalUnits} bouteille(s)</div></div>
+          <div><h1 onClick={rename} style={{cursor:"pointer"}}>🍷 {meta.label||"Inventaire vin"} ✎</h1><div className="sub">{refs} réf. · {totalUnits} bouteille(s){isCible?` · 🎯 ${cibleCounted}/${refList.length} liste`:""}</div></div>
           <div className="header-actions"><button className="header-btn" onClick={onLeave}>← Retour</button></div>
         </div>
       </div>
@@ -3812,10 +3862,12 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
       <div style={{padding:14, paddingBottom:130}}>
         {!firebaseReady && <div className="admin-note" style={{color:"#c62828"}}>⚠️ Hors-ligne : l'inventaire ne sera pas synchronisé avec la console.</div>}
 
-        <div style={{display:"flex", gap:8, marginBottom:10}}>
-          <button onClick={()=>{setScanMode("select");focusScan();}} style={{flex:1, padding:10, borderRadius:8, fontWeight:800, fontSize:13, border:"1.5px solid #7b1e3a", background:scanMode==="select"?"#7b1e3a":"#fff", color:scanMode==="select"?"#fff":"#7b1e3a"}}>Scan → quantité</button>
-          <button onClick={()=>{setScanMode("bottle");focusScan();}} style={{flex:1, padding:10, borderRadius:8, fontWeight:800, fontSize:13, border:"1.5px solid #7b1e3a", background:scanMode==="bottle"?"#7b1e3a":"#fff", color:scanMode==="bottle"?"#fff":"#7b1e3a"}}>1 scan = 1 bouteille</button>
-        </div>
+        {isCible
+          ? <div style={{marginBottom:10, padding:"8px 12px", borderRadius:8, background:"#fbeef2", border:"1.5px solid #7b1e3a", fontSize:13, color:"#7b1e3a", fontWeight:700}}>🎯 Inventaire ciblé{meta.fournisseur?(" — "+meta.fournisseur):""} · scanne, à la clôture les vins non comptés te seront proposés.</div>
+          : <div style={{display:"flex", gap:8, marginBottom:10}}>
+              <button onClick={()=>{setScanMode("select");focusScan();}} style={{flex:1, padding:10, borderRadius:8, fontWeight:800, fontSize:13, border:"1.5px solid #7b1e3a", background:scanMode==="select"?"#7b1e3a":"#fff", color:scanMode==="select"?"#fff":"#7b1e3a"}}>Scan → quantité</button>
+              <button onClick={()=>{setScanMode("bottle");focusScan();}} style={{flex:1, padding:10, borderRadius:8, fontWeight:800, fontSize:13, border:"1.5px solid #7b1e3a", background:scanMode==="bottle"?"#7b1e3a":"#fff", color:scanMode==="bottle"?"#fff":"#7b1e3a"}}>1 scan = 1 bouteille</button>
+            </div>}
 
         <div className="scan-search-wrap">
           <input ref={scanRef} className="scan-search-input" style={{borderColor:"#7b1e3a"}} type="text" inputMode="numeric"
@@ -3833,16 +3885,20 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
         {arr.length===0 && <div className="admin-note">Scanne un premier code-barres, ou ajoute une bouteille sans code-barres.</div>}
         {arr.slice().reverse().map(l=>{
           const un = uOf(l); const isA = l.key===activeKey; const noBar = !l.ean;
-          const titre = noBar ? (l.designation || "Sans code-barres") : l.ean;
-          const sous  = noBar
-            ? [(l.cartons||0)>0?`${l.cartons} carton(s)`:"", (l.bottles||0)>0?`${l.bottles} vrac`:""].filter(Boolean).join(" · ")
-            : `${l.designation||""}${(l.cartons||0)>0?` · ${l.cartons} carton(s)`:""}${(l.bottles||0)>0?` · ${l.bottles} vrac`:""}`;
+          const toLink = l.needsLink && !l.code;
+          const hasName = !!(l.code && l.designation);
+          const titre = hasName ? l.designation : (toLink ? "⚠️ À lier" : (noBar ? (l.designation || "Sans code-barres") : l.ean));
+          const sous  = hasName
+            ? `${l.ean||""}${(l.cartons||0)>0?` · ${l.cartons} carton(s)`:""}${(l.bottles||0)>0?` · ${l.bottles} vrac`:""}`
+            : (noBar
+              ? [(l.cartons||0)>0?`${l.cartons} carton(s)`:"", (l.bottles||0)>0?`${l.bottles} vrac`:""].filter(Boolean).join(" · ")
+              : `${l.designation||l.ean}${(l.cartons||0)>0?` · ${l.cartons} carton(s)`:""}${(l.bottles||0)>0?` · ${l.bottles} vrac`:""}`);
           return (
             <div key={l.key} onClick={()=>openEditor(l.key)}
-              style={{background:isA?"#fbe9ee":"#fff", border:"1.5px solid "+(isA?"#7b1e3a":"#e6e8ec"), borderRadius:10, padding:"10px 12px", marginBottom:8, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10}}>
+              style={{background:isA?"#fbe9ee":(toLink?"#fff7f9":"#fff"), border:"1.5px solid "+(isA?"#7b1e3a":(toLink?"#e6a8bd":"#e6e8ec")), borderRadius:10, padding:"10px 12px", marginBottom:8, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10}}>
               <div style={{minWidth:0}}>
-                <div style={{fontFamily:noBar?"inherit":"monospace", fontWeight:700, fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{noBar?"✏️ ":""}{titre}</div>
-                <div style={{fontSize:12, color:"#777", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{sous}</div>
+                <div style={{fontFamily:(hasName||noBar||toLink)?"inherit":"monospace", fontWeight:700, fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{noBar&&!toLink&&!hasName?"✏️ ":""}{titre}</div>
+                <div style={{fontSize:12, color:"#777", fontFamily:hasName?"monospace":"inherit", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{sous}</div>
               </div>
               <div style={{fontWeight:900, fontSize:18, color:"#7b1e3a", whiteSpace:"nowrap"}}>{un}</div>
             </div>
@@ -3861,20 +3917,42 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
       {/* Popup de saisie de quantité (s'ouvre au scan, sur « sans code-barres », ou en touchant une ligne). */}
       {editKey && lines[editKey] && (() => {
         const el = lines[editKey]; const noBar = !el.ean;
+        const needsLink = isCible && el.needsLink && !el.code;
+        const linked = isCible && el.code;
+        const q = stripAccents((linkQuery||"").toLowerCase());
+        const propositions = needsLink ? refList.filter(r => { const d=stripAccents((r.designation||"").toLowerCase()); const c=String(r.code||""); return !q || d.includes(q) || c.includes(q); }).slice(0,40) : [];
         return (
         <div onClick={closeEditor}
           style={{position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1000, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"28px 12px", overflowY:"auto"}}>
           <div onClick={e=>e.stopPropagation()}
             style={{background:"#fff", width:"100%", maxWidth:460, borderRadius:16, padding:18, boxShadow:"0 12px 40px rgba(0,0,0,.3)"}}>
             <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, gap:8}}>
-              <div style={{fontFamily:noBar?"inherit":"monospace", fontWeight:800, fontSize:16, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>
-                {noBar ? "✏️ Sans code-barres" : el.ean}
+              <div style={{fontWeight:800, fontSize:15, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>
+                {linked ? ("🍷 "+(el.designation||el.code)) : (noBar ? "✏️ Sans code-barres" : (<span style={{fontFamily:"monospace"}}>{el.ean}</span>))}
               </div>
               <button onClick={()=>{ removeLine(editKey); setEditKey(null); }}
                 style={{background:"#fdecea", color:"#c62828", borderRadius:6, padding:"6px 12px", fontWeight:700, fontSize:13, whiteSpace:"nowrap"}}>🗑 Supprimer</button>
             </div>
+            {needsLink && (
+              <div style={{marginBottom:14, border:"1.5px solid #7b1e3a", borderRadius:10, padding:10, background:"#fbeef2"}}>
+                <div style={{fontSize:13, fontWeight:800, color:"#7b1e3a", marginBottom:2}}>Code-barres inconnu : <span style={{fontFamily:"monospace"}}>{el.ean}</span></div>
+                <div style={{fontSize:12, color:"#666", marginBottom:8}}>Choisis le vin correspondant dans la liste du fournisseur (mémorisé pour la prochaine fois) :</div>
+                <input type="text" value={linkQuery} onChange={e=>setLinkQuery(e.target.value)} placeholder="Rechercher un vin…" autoFocus
+                  style={{width:"100%", padding:10, border:"1.5px solid #ddd", borderRadius:8, marginBottom:8, fontSize:14}} />
+                <div style={{maxHeight:200, overflowY:"auto"}}>
+                  {propositions.map(r => (
+                    <div key={r.code} onClick={()=>linkScanToRef(editKey, r.code)}
+                      style={{padding:"8px 10px", borderBottom:"1px solid #f0e0e6", cursor:"pointer", fontSize:13}}>
+                      {r.designation||"(sans nom)"} <span style={{color:"#999", fontFamily:"monospace"}}>· {r.code}</span>
+                    </div>
+                  ))}
+                  {propositions.length===0 && <div style={{fontSize:12, color:"#999", padding:6}}>Aucun vin trouvé.</div>}
+                </div>
+                <div style={{fontSize:11, color:"#999", marginTop:6}}>Ou saisis quand même une quantité ci-dessous (le vin restera « hors liste »).</div>
+              </div>
+            )}
             <input type="text" value={el.designation||""} placeholder={noBar ? "Désignation (ex. Côtes du Rhône 75cl)" : "Désignation (optionnel)"}
-              autoFocus={noBar}
+              autoFocus={noBar && !needsLink}
               onChange={e=>writeLine(editKey,{designation:e.target.value})}
               style={{width:"100%", padding:12, border:"1.5px solid "+(noBar?"#7b1e3a":"#ddd"), borderRadius:8, marginBottom:14, fontSize:15}} />
             <div style={{display:"flex", gap:12, marginBottom:12}}>
@@ -3890,6 +3968,48 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
         </div>
         );
       })()}
+
+      {/* Popup CLÔTURE inventaire ciblé : les vins de la liste non comptés (0 rapide / quantité retrouvée). */}
+      {showMissing && (
+        <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1100, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"22px 12px", overflowY:"auto"}}>
+          <div style={{background:"#fff", width:"100%", maxWidth:520, borderRadius:16, padding:18, boxShadow:"0 12px 40px rgba(0,0,0,.3)"}}>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6, gap:8}}>
+              <div style={{fontWeight:900, fontSize:17}}>🍷 Vins non comptés</div>
+              <div style={{fontSize:13, color:"#7b1e3a", fontWeight:800}}>{missingRefs.length} restant(s)</div>
+            </div>
+            <div style={{fontSize:12, color:"#666", marginBottom:12}}>
+              {meta.fournisseur ? ("Fournisseur : "+meta.fournisseur+". ") : ""}Mets <b>0</b> (pas en stock) ou saisis la <b>quantité retrouvée</b> pour chaque vin. Les vins déjà comptés ont disparu de la liste.
+            </div>
+            {missingRefs.length===0
+              ? <div style={{textAlign:"center", padding:"16px 0", color:"#2e7d32", fontWeight:800}}>✓ Tous les vins de la liste sont comptés.</div>
+              : (
+              <div style={{maxHeight:"52vh", overflowY:"auto", marginBottom:12}}>
+                {missingRefs.map(r => (
+                  <div key={r.code} style={{display:"flex", alignItems:"center", gap:8, padding:"8px 4px", borderBottom:"1px solid #f0f0f0"}}>
+                    <div style={{flex:1, minWidth:0, fontSize:13}}>
+                      <div style={{overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{r.designation||"(sans nom)"}</div>
+                      <div style={{fontSize:11, color:"#999", fontFamily:"monospace"}}>{r.code}</div>
+                    </div>
+                    <button onClick={()=>setRefQty(r.code, 0)}
+                      style={{background:"#fdecea", color:"#c62828", border:"none", borderRadius:8, padding:"8px 12px", fontWeight:800, fontSize:14}}>0</button>
+                    <input type="tel" inputMode="numeric" placeholder="retrouvé" defaultValue=""
+                      onFocus={e=>e.target.select()}
+                      onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); const v=e.target.value.replace(/\D/g,""); if(v!=="") setRefQty(r.code, v); } }}
+                      onBlur={e=>{ const v=e.target.value.replace(/\D/g,""); if(v!=="") setRefQty(r.code, v); }}
+                      style={{width:78, padding:"8px 6px", fontSize:15, fontWeight:700, textAlign:"center", border:"1.5px solid #ddd", borderRadius:8}} />
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{display:"flex", gap:8}}>
+              <button onClick={()=>setShowMissing(false)}
+                style={{flex:1, padding:14, background:"#eef2f7", color:"#333", borderRadius:12, fontWeight:800, fontSize:15}}>← Continuer l'inventaire</button>
+              <button onClick={()=>{ setShowMissing(false); doClose(); }}
+                style={{flex:1, padding:14, background:"#7b1e3a", color:"#fff", borderRadius:12, fontWeight:800, fontSize:15}}>✓ Clôturer</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
