@@ -3649,6 +3649,7 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
   const meta  = data.meta  || {};
   const [scan, setScan] = useState("");
   const [activeKey, setActiveKey] = useState(null);
+  const [editKey, setEditKey] = useState(null); // ligne en cours d'édition dans la popup
   const [scanMode, setScanMode] = useState("bottle"); // bottle = 1 scan +1 bouteille ; select = sélection pour saisie
   const [showCam, setShowCam] = useState(false);
   const [toast, setToast] = useState("");
@@ -3701,18 +3702,25 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
         });
       }
       flash("🍾 +1 bouteille");
+      setActiveKey(key);
+      setScan(""); focusScan();
     } else {
+      // Mode saisie manuelle : on ouvre directement la popup de quantité.
       if (!lines[key]) writeLine(key, { ean, bottles:0, cartons:0 });
-      flash("Sélectionné");
+      setActiveKey(key);
+      setEditKey(key);
+      setScan("");
     }
-    setActiveKey(key);
-    setScan(""); focusScan();
     try { navigator.vibrate && navigator.vibrate(40); } catch(e){}
   };
 
+  const openEditor  = (key) => { setActiveKey(key); setEditKey(key); };
+  const closeEditor = () => { setEditKey(null); focusScan(); };
+
   const setQty = (key, field, val) => writeLine(key, { [field]: Math.max(0, Math.floor(Number(val)||0)) });
+  // NB : plus de focusScan() ici — c'est ce qui faisait remonter la page à chaque +.
   const bump   = (key, field, delta) => {
-    const cur = lines[key] || {}; writeLine(key, { [field]: Math.max(0, (Number(cur[field])||0)+delta) }); focusScan();
+    const cur = lines[key] || {}; writeLine(key, { [field]: Math.max(0, (Number(cur[field])||0)+delta) });
   };
 
   const arr = Object.entries(lines).map(([k,l])=>Object.assign({key:k}, l))
@@ -3720,7 +3728,6 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
   const uOf = (l) => (l.units!=null ? l.units : ((l.cartons||0)*CARTON_VIN + (l.bottles||0)));
   const totalUnits = arr.reduce((s,l)=>s+uOf(l), 0);
   const refs = arr.filter(l=>uOf(l)>0).length;
-  const active = activeKey ? lines[activeKey] : null;
 
   const cloturer = () => {
     if (!confirm("Clôturer cet inventaire ?\n\nLa validation et la génération du .txt (pour PROGMAG) se font ensuite dans la console responsable.")) return;
@@ -3764,31 +3771,12 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
           <button className="btn-secondary" style={{flex:1}} onClick={()=>commitScan(scan)} disabled={!scan}>Ajouter</button>
         </div>
 
-        {active && (
-          <div className="card" style={{maxWidth:"none", marginBottom:14, border:"2px solid #7b1e3a"}}>
-            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8}}>
-              <div style={{fontFamily:"monospace", fontWeight:800, fontSize:16}}>{active.ean}</div>
-              <button onClick={()=>removeLine(activeKey)} style={{background:"#fdecea", color:"#c62828", borderRadius:6, padding:"4px 10px", fontWeight:700, fontSize:13}}>🗑 Supprimer</button>
-            </div>
-            <input type="text" value={active.designation||""} placeholder="Désignation (optionnel)"
-              onChange={e=>writeLine(activeKey,{designation:e.target.value})} onBlur={focusScan}
-              style={{width:"100%", padding:10, border:"1.5px solid #ddd", borderRadius:8, marginBottom:12, fontSize:14}} />
-            <div style={{display:"flex", gap:10, marginBottom:10}}>
-              <QtyBox label="Cartons (×6)" val={active.cartons||0} onDelta={d=>bump(activeKey,"cartons",d)} onSet={v=>setQty(activeKey,"cartons",v)} onBlur={focusScan} color="#7b1e3a" />
-              <QtyBox label="Bouteilles" val={active.bottles||0} onDelta={d=>bump(activeKey,"bottles",d)} onSet={v=>setQty(activeKey,"bottles",v)} onBlur={focusScan} color="#e65100" />
-            </div>
-            <div style={{textAlign:"center", fontSize:16, fontWeight:800, color:"#1a4d2e", background:"#e8f5e9", borderRadius:8, padding:"10px 0"}}>
-              = {(Number(active.cartons)||0)*CARTON_VIN + (Number(active.bottles)||0)} bouteille(s)
-            </div>
-          </div>
-        )}
-
         <h3 style={{fontSize:14, color:"#555", margin:"8px 4px"}}>Lignes ({arr.length})</h3>
         {arr.length===0 && <div className="admin-note">Scanne un premier code-barres pour commencer.</div>}
         {arr.slice().reverse().map(l=>{
           const un = uOf(l); const isA = l.key===activeKey;
           return (
-            <div key={l.key} onClick={()=>{ setActiveKey(l.key); focusScan(); }}
+            <div key={l.key} onClick={()=>openEditor(l.key)}
               style={{background:isA?"#fbe9ee":"#fff", border:"1.5px solid "+(isA?"#7b1e3a":"#e6e8ec"), borderRadius:10, padding:"10px 12px", marginBottom:8, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10}}>
               <div style={{minWidth:0}}>
                 <div style={{fontFamily:"monospace", fontWeight:700, fontSize:14}}>{l.ean}</div>
@@ -3807,6 +3795,33 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
 
       {toast && <div className="toast">{toast}</div>}
       {showCam && <CameraScanner onDetect={(code)=>{ setShowCam(false); commitScan(code); }} onClose={()=>{ setShowCam(false); focusScan(); }} />}
+
+      {/* Popup de saisie de quantité (s'ouvre au scan en mode manuel ou en touchant une ligne). */}
+      {editKey && lines[editKey] && (
+        <div onClick={closeEditor}
+          style={{position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1000, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"36px 14px", overflowY:"auto"}}>
+          <div onClick={e=>e.stopPropagation()}
+            style={{background:"#fff", width:"100%", maxWidth:460, borderRadius:16, padding:18, boxShadow:"0 12px 40px rgba(0,0,0,.3)"}}>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
+              <div style={{fontFamily:"monospace", fontWeight:800, fontSize:18}}>{lines[editKey].ean}</div>
+              <button onClick={()=>{ removeLine(editKey); setEditKey(null); }}
+                style={{background:"#fdecea", color:"#c62828", borderRadius:6, padding:"6px 12px", fontWeight:700, fontSize:13}}>🗑 Supprimer</button>
+            </div>
+            <input type="text" value={lines[editKey].designation||""} placeholder="Désignation (optionnel)"
+              onChange={e=>writeLine(editKey,{designation:e.target.value})}
+              style={{width:"100%", padding:12, border:"1.5px solid #ddd", borderRadius:8, marginBottom:14, fontSize:15}} />
+            <div style={{display:"flex", gap:12, marginBottom:12}}>
+              <QtyBox label="Cartons (×6)" val={lines[editKey].cartons||0} onDelta={d=>bump(editKey,"cartons",d)} onSet={v=>setQty(editKey,"cartons",v)} onBlur={()=>{}} color="#7b1e3a" />
+              <QtyBox label="Bouteilles" val={lines[editKey].bottles||0} onDelta={d=>bump(editKey,"bottles",d)} onSet={v=>setQty(editKey,"bottles",v)} onBlur={()=>{}} color="#e65100" />
+            </div>
+            <div style={{textAlign:"center", fontSize:17, fontWeight:800, color:"#1a4d2e", background:"#e8f5e9", borderRadius:8, padding:"12px 0", marginBottom:14}}>
+              = {(Number(lines[editKey].cartons)||0)*CARTON_VIN + (Number(lines[editKey].bottles)||0)} bouteille(s)
+            </div>
+            <button onClick={closeEditor}
+              style={{width:"100%", padding:16, background:"#7b1e3a", color:"#fff", borderRadius:12, fontWeight:800, fontSize:17}}>✓ Valider</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
