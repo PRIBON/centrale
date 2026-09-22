@@ -294,7 +294,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.1";
+const APP_VERSION = "v5.2";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -533,6 +533,23 @@ const isBarcode = (q) => /^\d{5,}$/.test((q||"").trim());
 // (EAN-13 vs code interne) et compare dans les deux sens.
 const digitsOnly = (s) => (s||"").toString().replace(/\D/g,"");
 const trimZeros = (s) => s.replace(/^0+/,"") || s;
+
+// Extraction de l'EAN depuis un code scanné, y compris les QR/DataMatrix GS1.
+// Un code GS1 commence par l'AI (01) suivi du GTIN sur 14 chiffres, PUIS d'autres
+// données (n° de série AI 21, lot AI 10, DLC AI 17…) qu'il faut IGNORER.
+//   (01)03463310025489 21xxxxxx  ->  EAN-13 3463310025489
+// Un code-barres classique (EAN-13/8, UPC) est renvoyé tel quel.
+function extractEan(raw){
+  let s = digitsOnly(raw);
+  if (s.startsWith("01")) {
+    if (s.length >= 16) {           // GS1 : (01) + GTIN-14 (+ éventuel reste)
+      let gtin = s.substr(2, 14);
+      return (gtin.length === 14 && gtin[0] === "0") ? gtin.slice(1) : gtin; // GTIN-14 -> EAN-13
+    }
+    if (s.length === 15) return s.substr(2); // (01) + EAN-13 en clair (sans zéro de bourrage)
+  }
+  return s;
+}
 const barcodeMatch = (article, code) => {
   const a = digitsOnly(article), q = digitsOnly(code);
   if (!a || !q) return false;
@@ -3709,7 +3726,7 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
   };
 
   const commitScan = (raw) => {
-    const ean = digitsOnly(raw);
+    const ean = extractEan(raw); // gère code-barres classique ET QR/DataMatrix GS1
     if (ean.length < 4) { setScan(""); focusScan(); return; }
     if (scanMode === "bottle") {
       // Mode « 1 scan = 1 bouteille » : on regroupe par code-barres (incrément atomique).
