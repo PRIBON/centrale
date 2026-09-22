@@ -248,6 +248,23 @@ function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
   .bcast { background:#1a4d2e; color:#fff; padding:10px 14px; display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:14px; box-shadow:0 -2px 8px rgba(0,0,0,.15); }
   .bcast span { flex:1; }
   .bcast button { background:rgba(255,255,255,.2); color:#fff; border:none; border-radius:6px; padding:4px 10px; font-weight:800; cursor:pointer; }
+  /* Bannière MISE À JOUR forcée (nouvelle version dispo) */
+  .upd-banner { position:fixed; top:0; left:0; right:0; z-index:10000; background:#c62828; color:#fff;
+    padding:12px 14px; display:flex; align-items:center; justify-content:space-between; gap:12px;
+    font-size:15px; font-weight:700; box-shadow:0 3px 12px rgba(0,0,0,.3); animation:updPulse 1.4s ease-in-out infinite; }
+  .upd-banner span { flex:1; line-height:1.25; }
+  .upd-banner button { background:#fff; color:#c62828; border:none; border-radius:8px; padding:10px 16px;
+    font-weight:900; font-size:15px; cursor:pointer; white-space:nowrap; }
+  @keyframes updPulse { 0%,100%{ background:#c62828; } 50%{ background:#e53935; } }
+  /* Écrans étroits type Zebra / douchette Android : on compacte l'UI pour éviter tout débordement */
+  @media (max-width: 430px) {
+    .scan-search-input { font-size:20px; padding:14px 44px 14px 14px; }
+    .scan-mode { padding:12px; }
+    .header h1 { font-size:15px; }
+  }
+  @media (max-width: 360px) {
+    .scan-search-input { font-size:18px; padding:12px 40px 12px 12px; }
+  }
 </style>
 </head>
 <body>
@@ -277,7 +294,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v4.9";
+const APP_VERSION = "v5.0";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -295,14 +312,28 @@ const CODE_SESSION_TTL_MS = 60 * 60 * 1000; // 1 h
 // (action "get-centrale-version" côté Apps Script). Si plus récente -> recharge avec
 // cache-bust (?v=…). Le garde-fou évite toute boucle si le fichier déployé n'est pas encore à jour.
 function versGT(a, b){ const pa=String(a).replace(/^v/,"").split(".").map(n=>parseInt(n,10)||0), pb=String(b).replace(/^v/,"").split(".").map(n=>parseInt(n,10)||0); for(let i=0;i<Math.max(pa.length,pb.length);i++){ const x=pa[i]||0,y=pb[i]||0; if(y>x) return true; if(y<x) return false; } return false; }
+// Recharge l'app en cassant le cache (nouvelle version).
+function centraleForceReload(latest){
+  try { const u=new URL(location.href); u.searchParams.set("v", String(latest||Date.now())); location.replace(u.toString()); }
+  catch(e){ location.reload(true); }
+}
+// Affiche une bannière rouge « à actualiser » non masquable (comme l'appli Kelbongoo).
+function showUpdateBanner(latest){
+  if (document.getElementById("centrale-update")) return; // déjà affichée
+  const el = document.createElement("div");
+  el.id = "centrale-update"; el.className = "upd-banner";
+  el.innerHTML = `<span>🔄 Nouvelle version disponible (${String(latest||"")}). Merci d'actualiser.</span>`
+    + `<button id="centrale-update-btn">Actualiser</button>`;
+  document.body.appendChild(el);
+  const btn = document.getElementById("centrale-update-btn");
+  if (btn) btn.onclick = () => centraleForceReload(latest);
+  window.__centraleUpdatePending = latest; // mémorise pour un forçage éventuel
+}
 function centraleCheckVersion(){
   fetch(CODE_VERIFY_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"get-centrale-version" }) })
     .then(r=>r.json()).then(j=>{
       const latest = j && j.version; if(!latest) return;
-      if(versGT(APP_VERSION, latest)){
-        try { const u=new URL(location.href); if(u.searchParams.get("v")!==String(latest)){ u.searchParams.set("v", String(latest)); location.replace(u.toString()); } }
-        catch(e){ location.reload(); }
-      }
+      if(versGT(APP_VERSION, latest)) showUpdateBanner(latest);
     }).catch(()=>{});
 }
 
@@ -3574,13 +3605,13 @@ function useInventaireVin() {
 }
 
 // Compteur de quantité (cartons / bouteilles) avec + / − et saisie directe.
-function QtyBox({ label, val, onDelta, onSet, onBlur, color }) {
+function QtyBox({ label, val, onDelta, onSet, onBlur, color, autoFocus }) {
   return (
     <div style={{flex:1, textAlign:"center"}}>
       <div style={{fontSize:11, fontWeight:800, color:"#666", marginBottom:6, textTransform:"uppercase", letterSpacing:".3px"}}>{label}</div>
       <div style={{display:"flex", alignItems:"center", gap:6}}>
         <button onClick={()=>onDelta(-1)} style={{width:42, height:46, borderRadius:8, background:"#f0f0f0", fontSize:24, fontWeight:800, color:"#555"}}>−</button>
-        <input type="tel" inputMode="numeric" value={val}
+        <input type="tel" inputMode="numeric" value={val} autoFocus={autoFocus}
           onChange={e=>onSet(e.target.value.replace(/\D/g,""))} onFocus={e=>e.target.select()} onBlur={onBlur}
           style={{width:"100%", minWidth:0, padding:"10px 4px", fontSize:24, fontWeight:800, textAlign:"center", border:"1.5px solid #ddd", borderRadius:8}} />
         <button onClick={()=>onDelta(1)} style={{width:42, height:46, borderRadius:8, background:color, color:"#fff", fontSize:24, fontWeight:800}}>+</button>
@@ -3650,7 +3681,7 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
   const [scan, setScan] = useState("");
   const [activeKey, setActiveKey] = useState(null);
   const [editKey, setEditKey] = useState(null); // ligne en cours d'édition dans la popup
-  const [scanMode, setScanMode] = useState("bottle"); // bottle = 1 scan +1 bouteille ; select = sélection pour saisie
+  const [scanMode, setScanMode] = useState("select"); // select = scan → popup quantité (défaut) ; bottle = 1 scan +1 bouteille
   const [showCam, setShowCam] = useState(false);
   const [toast, setToast] = useState("");
   const scanRef = useRef(null);
@@ -3717,6 +3748,13 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
   const openEditor  = (key) => { setActiveKey(key); setEditKey(key); };
   const closeEditor = () => { setEditKey(null); focusScan(); };
 
+  // Bouteille SANS code-barres : on crée une ligne manuelle et on ouvre la popup (désignation + quantité).
+  const addManualLine = () => {
+    const key = "m_" + Date.now();
+    writeLine(key, { ean:"", designation:"", bottles:0, cartons:0, manual:true });
+    setActiveKey(key); setEditKey(key); setScan("");
+  };
+
   const setQty = (key, field, val) => writeLine(key, { [field]: Math.max(0, Math.floor(Number(val)||0)) });
   // NB : plus de focusScan() ici — c'est ce qui faisait remonter la page à chaque +.
   const bump   = (key, field, delta) => {
@@ -3756,8 +3794,8 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
         {!firebaseReady && <div className="admin-note" style={{color:"#c62828"}}>⚠️ Hors-ligne : l'inventaire ne sera pas synchronisé avec la console.</div>}
 
         <div style={{display:"flex", gap:8, marginBottom:10}}>
+          <button onClick={()=>{setScanMode("select");focusScan();}} style={{flex:1, padding:10, borderRadius:8, fontWeight:800, fontSize:13, border:"1.5px solid #7b1e3a", background:scanMode==="select"?"#7b1e3a":"#fff", color:scanMode==="select"?"#fff":"#7b1e3a"}}>Scan → quantité</button>
           <button onClick={()=>{setScanMode("bottle");focusScan();}} style={{flex:1, padding:10, borderRadius:8, fontWeight:800, fontSize:13, border:"1.5px solid #7b1e3a", background:scanMode==="bottle"?"#7b1e3a":"#fff", color:scanMode==="bottle"?"#fff":"#7b1e3a"}}>1 scan = 1 bouteille</button>
-          <button onClick={()=>{setScanMode("select");focusScan();}} style={{flex:1, padding:10, borderRadius:8, fontWeight:800, fontSize:13, border:"1.5px solid #7b1e3a", background:scanMode==="select"?"#7b1e3a":"#fff", color:scanMode==="select"?"#fff":"#7b1e3a"}}>Saisie manuelle</button>
         </div>
 
         <div className="scan-search-wrap">
@@ -3766,21 +3804,26 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
             onChange={e=>setScan(e.target.value)}
             onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); commitScan(scan); } }} autoFocus />
         </div>
-        <div style={{display:"flex", gap:8, marginBottom:14}}>
+        <div style={{display:"flex", gap:8, marginBottom:10}}>
           <button className="btn-secondary" style={{flex:1}} onClick={()=>setShowCam(true)}>📷 Caméra</button>
           <button className="btn-secondary" style={{flex:1}} onClick={()=>commitScan(scan)} disabled={!scan}>Ajouter</button>
         </div>
+        <button onClick={addManualLine} style={{width:"100%", padding:12, marginBottom:14, borderRadius:10, fontWeight:800, fontSize:14, border:"1.5px dashed #7b1e3a", background:"#fff", color:"#7b1e3a"}}>✏️ Bouteille sans code-barres</button>
 
         <h3 style={{fontSize:14, color:"#555", margin:"8px 4px"}}>Lignes ({arr.length})</h3>
-        {arr.length===0 && <div className="admin-note">Scanne un premier code-barres pour commencer.</div>}
+        {arr.length===0 && <div className="admin-note">Scanne un premier code-barres, ou ajoute une bouteille sans code-barres.</div>}
         {arr.slice().reverse().map(l=>{
-          const un = uOf(l); const isA = l.key===activeKey;
+          const un = uOf(l); const isA = l.key===activeKey; const noBar = !l.ean;
+          const titre = noBar ? (l.designation || "Sans code-barres") : l.ean;
+          const sous  = noBar
+            ? [(l.cartons||0)>0?`${l.cartons} carton(s)`:"", (l.bottles||0)>0?`${l.bottles} vrac`:""].filter(Boolean).join(" · ")
+            : `${l.designation||""}${(l.cartons||0)>0?` · ${l.cartons} carton(s)`:""}${(l.bottles||0)>0?` · ${l.bottles} vrac`:""}`;
           return (
             <div key={l.key} onClick={()=>openEditor(l.key)}
               style={{background:isA?"#fbe9ee":"#fff", border:"1.5px solid "+(isA?"#7b1e3a":"#e6e8ec"), borderRadius:10, padding:"10px 12px", marginBottom:8, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10}}>
               <div style={{minWidth:0}}>
-                <div style={{fontFamily:"monospace", fontWeight:700, fontSize:14}}>{l.ean}</div>
-                <div style={{fontSize:12, color:"#777", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{l.designation||""}{(l.cartons||0)>0?` · ${l.cartons} carton(s)`:""}{(l.bottles||0)>0?` · ${l.bottles} vrac`:""}</div>
+                <div style={{fontFamily:noBar?"inherit":"monospace", fontWeight:700, fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{noBar?"✏️ ":""}{titre}</div>
+                <div style={{fontSize:12, color:"#777", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{sous}</div>
               </div>
               <div style={{fontWeight:900, fontSize:18, color:"#7b1e3a", whiteSpace:"nowrap"}}>{un}</div>
             </div>
@@ -3796,32 +3839,38 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
       {toast && <div className="toast">{toast}</div>}
       {showCam && <CameraScanner onDetect={(code)=>{ setShowCam(false); commitScan(code); }} onClose={()=>{ setShowCam(false); focusScan(); }} />}
 
-      {/* Popup de saisie de quantité (s'ouvre au scan en mode manuel ou en touchant une ligne). */}
-      {editKey && lines[editKey] && (
+      {/* Popup de saisie de quantité (s'ouvre au scan, sur « sans code-barres », ou en touchant une ligne). */}
+      {editKey && lines[editKey] && (() => {
+        const el = lines[editKey]; const noBar = !el.ean;
+        return (
         <div onClick={closeEditor}
-          style={{position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1000, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"36px 14px", overflowY:"auto"}}>
+          style={{position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1000, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"28px 12px", overflowY:"auto"}}>
           <div onClick={e=>e.stopPropagation()}
             style={{background:"#fff", width:"100%", maxWidth:460, borderRadius:16, padding:18, boxShadow:"0 12px 40px rgba(0,0,0,.3)"}}>
-            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
-              <div style={{fontFamily:"monospace", fontWeight:800, fontSize:18}}>{lines[editKey].ean}</div>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, gap:8}}>
+              <div style={{fontFamily:noBar?"inherit":"monospace", fontWeight:800, fontSize:16, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>
+                {noBar ? "✏️ Sans code-barres" : el.ean}
+              </div>
               <button onClick={()=>{ removeLine(editKey); setEditKey(null); }}
-                style={{background:"#fdecea", color:"#c62828", borderRadius:6, padding:"6px 12px", fontWeight:700, fontSize:13}}>🗑 Supprimer</button>
+                style={{background:"#fdecea", color:"#c62828", borderRadius:6, padding:"6px 12px", fontWeight:700, fontSize:13, whiteSpace:"nowrap"}}>🗑 Supprimer</button>
             </div>
-            <input type="text" value={lines[editKey].designation||""} placeholder="Désignation (optionnel)"
+            <input type="text" value={el.designation||""} placeholder={noBar ? "Désignation (ex. Côtes du Rhône 75cl)" : "Désignation (optionnel)"}
+              autoFocus={noBar}
               onChange={e=>writeLine(editKey,{designation:e.target.value})}
-              style={{width:"100%", padding:12, border:"1.5px solid #ddd", borderRadius:8, marginBottom:14, fontSize:15}} />
+              style={{width:"100%", padding:12, border:"1.5px solid "+(noBar?"#7b1e3a":"#ddd"), borderRadius:8, marginBottom:14, fontSize:15}} />
             <div style={{display:"flex", gap:12, marginBottom:12}}>
-              <QtyBox label="Cartons (×6)" val={lines[editKey].cartons||0} onDelta={d=>bump(editKey,"cartons",d)} onSet={v=>setQty(editKey,"cartons",v)} onBlur={()=>{}} color="#7b1e3a" />
-              <QtyBox label="Bouteilles" val={lines[editKey].bottles||0} onDelta={d=>bump(editKey,"bottles",d)} onSet={v=>setQty(editKey,"bottles",v)} onBlur={()=>{}} color="#e65100" />
+              <QtyBox label="Cartons (×6)" val={el.cartons||0} onDelta={d=>bump(editKey,"cartons",d)} onSet={v=>setQty(editKey,"cartons",v)} onBlur={()=>{}} color="#7b1e3a" />
+              <QtyBox label="Bouteilles" val={el.bottles||0} onDelta={d=>bump(editKey,"bottles",d)} onSet={v=>setQty(editKey,"bottles",v)} onBlur={()=>{}} color="#e65100" />
             </div>
             <div style={{textAlign:"center", fontSize:17, fontWeight:800, color:"#1a4d2e", background:"#e8f5e9", borderRadius:8, padding:"12px 0", marginBottom:14}}>
-              = {(Number(lines[editKey].cartons)||0)*CARTON_VIN + (Number(lines[editKey].bottles)||0)} bouteille(s)
+              = {(Number(el.cartons)||0)*CARTON_VIN + (Number(el.bottles)||0)} bouteille(s)
             </div>
             <button onClick={closeEditor}
               style={{width:"100%", padding:16, background:"#7b1e3a", color:"#fff", borderRadius:12, fontWeight:800, fontSize:17}}>✓ Valider</button>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
