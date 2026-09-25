@@ -294,7 +294,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.3";
+const APP_VERSION = "v5.5";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -1121,46 +1121,163 @@ function reopenLastPalette(dateKey, storeCode, currentCloses) {
 // tout est gardé sur l'appareil et renvoyé à Firebase au retour de connexion (ou au clic « Sauvegarder »).
 const decStKey = (sid)=>"dec_backup_"+sid;      // état par fromage (portions, poids, terminé…)
 const decPKey  = (sid)=>"dec_pbackup_"+sid;     // liste des fromages (dont ajouts à la volée)
+const decMetaKey  = (sid)=>"dec_meta_"+sid;     // en-tête local (entité, BL, date…) — créé sur le serveur au 1er fromage seulement
+const decDirtyKey = (sid)=>"dec_dirty_"+sid;    // horodatage de la dernière saisie locale
+const decSyncKey  = (sid)=>"dec_sync_"+sid;     // horodatage de la dernière saisie CONFIRMÉE par le serveur
+function decLS(k, def){ try{ const v=localStorage.getItem(k); return v==null?def:JSON.parse(v); }catch(e){ return def; } }
+function decLSset(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+// ---- Suivi « envoyé / à envoyer » (partagé par toute l'app) ----
+const __decSyncListeners = new Set();
+let __decOnline = false, __decLastSyncAt = 0;
+function decSyncEmit(){ __decSyncListeners.forEach(f=>{ try{ f(); }catch(e){} }); }
+function useDecSyncTick(){ const [,setT]=useState(0); useEffect(()=>{ const f=()=>setT(x=>x+1); __decSyncListeners.add(f); return ()=>{ __decSyncListeners.delete(f); }; },[]); }
+function decMarkDirty(sid){ const ts=Date.now(); decLSset(decDirtyKey(sid), ts); decSyncEmit(); return ts; }
+function decMarkSynced(sid, ts){ const cur=decLS(decSyncKey(sid),0); if(ts>cur) decLSset(decSyncKey(sid), ts); __decLastSyncAt=Date.now(); decSyncEmit(); }
+function decIsPending(sid){ return decLS(decDirtyKey(sid),0) > decLS(decSyncKey(sid),0); }
+// Déduit entité / BL / jour depuis l'identifiant (bl_rob_41488, jour_kbg_20260925…) — utile pour les anciennes sauvegardes.
+function decSidInfo(sid){
+  let m = /^bl_(rob|kbg)_(.+)$/i.exec(sid||""); if (m) return { entity:m[1].toUpperCase(), docNumber:m[2] };
+  m = /^jour_(rob|kbg)_(\d{4})(\d{2})(\d{2})$/i.exec(sid||""); if (m) return { entity:m[1].toUpperCase(), docNumber:"", day:`${m[2]}-${m[3]}-${m[4]}` };
+  m = /^decoupe_(rob|kbg)_(\d+)$/i.exec(sid||""); if (m) return { entity:m[1].toUpperCase(), docNumber:"" };
+  return { entity:"", docNumber:"" };
+}
+function decLocalMeta(sid){
+  const lm = decLS(decMetaKey(sid), null); if (lm) return lm;
+  const inf = decSidInfo(sid); const ent = inf.entity||"ROB";
+  return { supplier:(ent==="KBG"?"Découpe Kelbongoo":"Découpe Robespierre")+(inf.docNumber?(" · BL "+inf.docNumber):" · du jour"), entity:ent, docNumber:inf.docNumber||"",
+           startedAt:(inf.day?new Date(inf.day+"T08:00:00").getTime():Date.now()), libre:true };
+}
+// Toutes les découpes connues sur CET appareil (sauvegardes locales).
+function decLocalSids(){
+  const out = new Set();
+  try { for (let i=0;i<localStorage.length;i++){ const k=localStorage.key(i)||""; const m=/^dec_(?:backup|pbackup|meta|dirty)_(.+)$/.exec(k); if(m) out.add(m[1]); } } catch(e){}
+  return [...out];
+}
+function decLocalHasData(sid){
+  const st = decLS(decStKey(sid), {}); const ps = decLS(decPKey(sid), []);
+  return (st && Object.keys(st).length>0) || (Array.isArray(ps) && ps.length>0);
+}
+function decPendingSids(){ return decLocalSids().filter(sid=>decIsPending(sid) && decLocalHasData(sid)); }
+// Efface les traces locales d'une découpe (après suppression, ou découpe vide abandonnée).
+function decClearLocal(sid){ [decStKey,decPKey,decMetaKey,decDirtyKey,decSyncKey].forEach(f=>{ try{ localStorage.removeItem(f(sid)); }catch(e){} }); decSyncEmit(); }
+// Liste des fromages avec poids de portion résolu (même calcul que l'écran de découpe).
+function decResolveList(products){
+  return (products||[]).map((p,idx)=>{ const rp=kbgRefPoids(p.designation); return {...p, poids:(rp>0?rp:(p.poids||FROMAGE_DEFAULT_POIDS)), _pkey:frKey(p,idx)}; });
+}
+function decUnionProducts(a, b){ const seen=new Set(), out=[]; [...(a||[]), ...(b||[])].forEach(p=>{ if(!p) return; const k=frKey(p,0); if(!seen.has(k)){ seen.add(k); out.push(p); } }); return out; }
+const decMetaFields = ["supplier","entity","docNumber","startedAt","createdBy","libre"];
+function withTimeout(p, ms){ return Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error("délai dépassé")), ms))]); }
+// ENVOI d'une découpe gardée sur l'appareil vers le serveur (fusion, sans rien écraser côté BL/console).
+// Crée l'en-tête sur le serveur s'il manque (découpe commencée hors ligne), pousse l'état + la liste,
+// recalcule le récap lu par la console, puis marque « envoyé ».
+async function decFlushSession(sid, opts){
+  if (!firebaseReady || !sid) return false;
+  opts = opts||{};
+  const dirtyAt = decLS(decDirtyKey(sid), 0) || Date.now();
+  const st = decLS(decStKey(sid), {}) || {}; const ps = decLS(decPKey(sid), []) || [];
+  const hasData = Object.keys(st).length>0 || ps.length>0;
+  const m = (await withTimeout(db.ref(`decoupe/${sid}/meta`).once("value"), 15000)).val();
+  if (!hasData){ decMarkSynced(sid, dirtyAt); return true; }
+  if (opts.legacy && !(m && m.startedAt)) {
+    // Ancienne sauvegarde sans suivi : on ne ressuscite pas une découpe supprimée, sauf si elle date d'aujourd'hui / hier.
+    const inf = decSidInfo(sid); const recent = inf.day && (Date.now()-new Date(inf.day+"T00:00:00").getTime()) < 2*86400000;
+    if (!recent){ decMarkSynced(sid, dirtyAt); return true; }
+  }
+  const lm = decLocalMeta(sid); const patch = {};
+  decMetaFields.forEach(f=>{ if ((m==null || m[f]==null || m[f]==="") && lm[f]!=null && lm[f]!=="") patch[f]=lm[f]; });
+  const writes = [];
+  if (Object.keys(patch).length) writes.push(db.ref(`decoupe/${sid}/meta`).update(patch));
+  Object.entries(st).forEach(([k,v])=>{ if (v && typeof v==="object") writes.push(db.ref(`decoupe/${sid}/state/${k}`).update(v)); });
+  const merged = decUnionProducts((m&&m.products)||[], ps);
+  if (merged.length && merged.length !== (((m&&m.products)||[]).length)) writes.push(db.ref(`decoupe/${sid}/meta/products`).set(merged));
+  await withTimeout(Promise.all(writes), 20000);
+  // Récap console recalculé avec l'état serveur fusionné.
+  try {
+    const s = (await withTimeout(db.ref(`decoupe/${sid}`).once("value"), 15000)).val() || {};
+    const mm = s.meta||{};
+    pushDecoupeRecap(sid, decResolveList(mm.products||merged), s.state||{}, { name:(s.recap&&s.recap.by)||mm.createdBy||"" }, mm.entity||lm.entity);
+  } catch(e){}
+  decMarkSynced(sid, dirtyAt);
+  return true;
+}
+let __decFlushing = false;
+async function decFlushAll(){
+  if (!firebaseReady || __decFlushing) return;
+  __decFlushing = true;
+  try {
+    for (const sid of decLocalSids()){
+      const legacy = localStorage.getItem(decDirtyKey(sid))==null && localStorage.getItem(decSyncKey(sid))==null;
+      if (!legacy && !decIsPending(sid)) continue;
+      try { await decFlushSession(sid, { legacy }); } catch(e){ /* réessai au prochain passage */ }
+    }
+  } finally { __decFlushing = false; decSyncEmit(); }
+}
 function useDecoupeSession(sessionId, operator) {
   const stKey = decStKey(sessionId), pKey = decPKey(sessionId);
-  const [state, setState] = useState(()=>{ try{ return JSON.parse(localStorage.getItem(stKey)||"{}"); }catch(e){ return {}; } });
-  const [meta, setMeta] = useState(null);
+  const [state, setState] = useState(()=>decLS(stKey, {}) || {});
+  const stateRef = useRef(state); useEffect(()=>{ stateRef.current = state; }, [state]);
+  const [serverMeta, setServerMeta] = useState(null);
+  const [metaLoaded, setMetaLoaded] = useState(false);
+  const serverMetaRef = useRef(null);
   const [connected, setConnected] = useState(false);
-  const saveStateBackup = useCallback((st)=>{ try{ localStorage.setItem(stKey, JSON.stringify(st||{})); }catch(e){} }, [stKey]);
-  // Renvoie vers Firebase tout ce qui est sauvegardé localement (fusion, sans rien écraser).
+  useDecSyncTick();
+  const saveStateBackup = useCallback((st)=>{ decLSset(stKey, st||{}); }, [stKey]);
+  // Envoie tout ce qui est gardé sur l'appareil (seulement s'il reste des saisies non confirmées).
   const flushNow = useCallback(async () => {
-    if (!firebaseReady || !sessionId) return;
-    try { const st=JSON.parse(localStorage.getItem(stKey)||"{}");
-      Object.entries(st).forEach(([k,v])=>{ if(v && typeof v==="object") db.ref(`decoupe/${sessionId}/state/${k}`).update(v).catch(()=>{}); }); } catch(e){}
-    try { const ps=JSON.parse(localStorage.getItem(pKey)||"null");
-      if (Array.isArray(ps) && ps.length) {
-        const snap = await db.ref(`decoupe/${sessionId}/meta/products`).once("value");
-        const server = snap.val()||[]; const seen=new Set(); const merged=[];
-        [...server, ...ps].forEach(p=>{ const k=frKey(p,0); if(!seen.has(k)){ seen.add(k); merged.push(p); } });
-        if (merged.length) db.ref(`decoupe/${sessionId}/meta/products`).set(merged).catch(()=>{});
-      }
-    } catch(e){}
-  }, [sessionId, stKey, pKey]);
-  // Changement de session : on repart de la sauvegarde locale de CETTE session (sinon le serveur écrase).
-  useEffect(() => { try{ setState(JSON.parse(localStorage.getItem(stKey)||"{}")); }catch(e){ setState({}); } }, [stKey]);
+    if (!firebaseReady || !sessionId) return false;
+    return decFlushSession(sessionId);
+  }, [sessionId]);
+  // Crée l'en-tête sur le serveur au 1er fromage (pas avant → plus de ligne « parasite » si on fait retour sans rien découper).
+  const ensureMeta = useCallback(() => {
+    if (!firebaseReady || !sessionId || !metaLoaded) return; // hors ligne : l'envoi automatique s'en charge au retour du réseau
+    const m = serverMetaRef.current; const lm = decLocalMeta(sessionId); const patch = {};
+    decMetaFields.forEach(f=>{ if ((m==null || m[f]==null || m[f]==="") && lm[f]!=null && lm[f]!=="") patch[f]=lm[f]; });
+    if (Object.keys(patch).length) db.ref(`decoupe/${sessionId}/meta`).update(patch).catch(()=>{});
+  }, [sessionId, metaLoaded]);
+  // Changement de session : on repart de la sauvegarde locale de CETTE session.
+  useEffect(() => { setState(decLS(stKey, {}) || {}); setServerMeta(null); serverMetaRef.current=null; setMetaLoaded(false); }, [stKey]);
   useEffect(() => {
     if (!firebaseReady || !sessionId) return;
-    const stateRef = db.ref(`decoupe/${sessionId}/state`);
+    const sRef = db.ref(`decoupe/${sessionId}/state`);
     const metaRef = db.ref(`decoupe/${sessionId}/meta`);
     const connectedRef = db.ref(".info/connected");
-    const onState = (snap)=>{ const v=snap.val(); if (v && Object.keys(v).length){ setState(v); saveStateBackup(v); } };
-    const onMeta = (snap)=>{ const m=snap.val(); setMeta(m||null);
-      if (m && Array.isArray(m.products)){ try { const cur=JSON.parse(localStorage.getItem(pKey)||"[]"); if(!Array.isArray(cur) || m.products.length>=cur.length) localStorage.setItem(pKey, JSON.stringify(m.products)); } catch(e){ try{ localStorage.setItem(pKey, JSON.stringify(m.products)); }catch(_){} } } };
-    const onConn = (snap)=>{ const c=!!snap.val(); setConnected(c); if(c) flushNow(); };
-    stateRef.on("value", onState); metaRef.on("value", onMeta); connectedRef.on("value", onConn);
-    return () => { stateRef.off("value",onState); metaRef.off("value",onMeta); connectedRef.off("value",onConn); };
+    const onState = (snap)=>{ const v=snap.val()||{};
+      // Saisies locales pas encore confirmées : elles restent prioritaires (le serveur n'efface JAMAIS ce qui n'est pas parti).
+      if (decIsPending(sessionId)) {
+        const local = decLS(stKey, {}) || {}; const merged = { ...v };
+        Object.entries(local).forEach(([k,lv])=>{ merged[k] = { ...(v[k]||{}), ...(lv||{}) }; });
+        setState(merged); saveStateBackup(merged);
+      } else if (Object.keys(v).length) { setState(v); saveStateBackup(v); }
+    };
+    const onMeta = (snap)=>{ const m=snap.val(); serverMetaRef.current=m||null; setServerMeta(m||null); setMetaLoaded(true);
+      if (m && Array.isArray(m.products)) decLSset(pKey, decUnionProducts(m.products, decLS(pKey, [])));
+      // En-tête absent sur le serveur alors que des saisies attendent : on le (re)crée pour que la découpe soit visible partout.
+      if ((!m || !m.startedAt) && decIsPending(sessionId)) {
+        const lm = decLocalMeta(sessionId); const patch = {};
+        decMetaFields.forEach(f=>{ if ((m==null || m[f]==null || m[f]==="") && lm[f]!=null && lm[f]!=="") patch[f]=lm[f]; });
+        const lp = decLS(pKey, []); if ((!m || !Array.isArray(m.products) || !m.products.length) && lp.length) patch.products = lp;
+        if (Object.keys(patch).length) db.ref(`decoupe/${sessionId}/meta`).update(patch).catch(()=>{});
+      }
+    };
+    const onConn = (snap)=>{ const c=!!snap.val(); setConnected(c); if(c && decIsPending(sessionId)) decFlushSession(sessionId).catch(()=>{}); };
+    sRef.on("value", onState); metaRef.on("value", onMeta); connectedRef.on("value", onConn);
+    return () => { sRef.off("value",onState); metaRef.off("value",onMeta); connectedRef.off("value",onConn); };
   }, [sessionId]);
   const setRow = useCallback((key, patch) => {
-    // Mise à jour optimiste + sauvegarde locale immédiate (marche hors ligne), puis Firebase.
-    setState(prev=>{ const next={ ...prev, [key]:{ ...(prev[key]||{}), ...patch } }; saveStateBackup(next); return next; });
-    if (firebaseReady && sessionId) db.ref(`decoupe/${sessionId}/state/${key}`).update(patch).catch(()=>{});
-  }, [sessionId, saveStateBackup]);
-  return { state, meta, connected: firebaseReady?connected:true, setRow, flushNow };
+    // Mise à jour optimiste + sauvegarde locale immédiate (marche hors ligne), puis serveur.
+    // `at` / `firstAt` = date de découpe du fromage (sert à l'historique console par jour de découpe).
+    const now = Date.now(); const prev = (stateRef.current||{})[key]||{};
+    const p2 = { ...patch, at:now }; if (!prev.firstAt) p2.firstAt = now;
+    const ts = decMarkDirty(sessionId);
+    setState(prevS=>{ const next={ ...prevS, [key]:{ ...(prevS[key]||{}), ...p2 } }; saveStateBackup(next); stateRef.current=next; return next; });
+    ensureMeta();
+    if (firebaseReady && sessionId) db.ref(`decoupe/${sessionId}/state/${key}`).update(p2).then(()=>{ const sm=serverMetaRef.current; if (sm && sm.startedAt) decMarkSynced(sessionId, ts); }).catch(()=>{});
+  }, [sessionId, saveStateBackup, ensureMeta]);
+  // En-tête effectif : local (entité/BL choisis au démarrage) complété/écrasé par le serveur dès qu'il existe.
+  const meta = useMemo(() => ({ ...decLocalMeta(sessionId), ...(serverMeta||{}) }), [serverMeta, sessionId]);
+  const pending = decIsPending(sessionId) && decLocalHasData(sessionId);
+  return { state, meta, serverMeta, metaLoaded, connected: firebaseReady?connected:true, setRow, flushNow, ensureMeta, pending,
+           syncedAt: decLS(decSyncKey(sessionId), 0) };
 }
 function useAllDecoupe() {
   const [sessions, setSessions] = useState({});
@@ -2611,6 +2728,7 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
   const deleteDecoupe = (sid, label) => {
     if (!confirm(`Supprimer la découpe « ${label||"Découpe"} » ?\n\nElle disparaîtra de la liste pour tout le monde. À n'utiliser que pour une découpe ouverte par erreur.`)) return;
     if (firebaseReady && sid) db.ref(`decoupe/${sid}`).remove().catch(e=>alert("Erreur : "+e.message));
+    decClearLocal(sid);
   };
   useEffect(() => {
     if (!firebaseReady) return;
@@ -2620,21 +2738,42 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
   }, []);
   // Seulement les découpes DU JOUR ; on distingue « en cours » et « terminées aujourd'hui »
   // pour ne plus afficher celles de la veille (déjà terminées) comme en cours.
+  useDecSyncTick();
   const active = useMemo(() => {
     const out = []; const tk = todayKey();
     Object.entries(allDecoupe||{}).forEach(([sid,s]) => {
       if (s && s.meta && s.meta.startedAt) {
-        const d=new Date(s.meta.startedAt); const dk=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
-        if (dk!==tk) return;
+        const dk = decDayOf(s.meta.startedAt);
         const total = (s.meta.products||[]).length;
-        const done = Object.values(s.state||{}).filter(x=>x&&x.done).length;
+        const stVals = Object.values(s.state||{}).filter(x=>x&&typeof x==="object");
+        const done = stVals.filter(x=>x.done).length;
+        const cutToday = stVals.some(x=>decDayOf(x.firstAt||x.at||0)===tk);
+        const fromConsole = !!(s.meta.loadedBy || (!s.meta.libre && s.meta.createdBy && String(s.meta.createdBy).includes("@")));
+        const finished = (total>0 && done>=total);
+        // Du jour, OU découpé aujourd'hui, OU BL chargé par le responsable ces 7 derniers jours et pas fini.
+        const recentBl = fromConsole && !finished && (Date.now()-s.meta.startedAt) < 7*86400000;
+        if (dk!==tk && !cutToday && !recentBl) return;
+        if (s.meta.libre && total===0 && stVals.length===0) return; // découpe vide ouverte puis abandonnée → masquée
         const sentDay = !!(s.recap && s.recap.daySentAt);
-        out.push({ id:sid, supplier:s.meta.supplier, startedAt:s.meta.startedAt, total, done, finished:(total>0 && done>=total), sentDay });
+        out.push({ id:sid, supplier:s.meta.supplier, docNumber:s.meta.docNumber||"", loadedBy:s.meta.loadedBy||(fromConsole?s.meta.createdBy:""), startedAt:s.meta.startedAt, dk, total, done, finished, sentDay });
       }
     });
     out.sort((a,b)=>b.startedAt-a.startedAt);
     return out;
   }, [allDecoupe]);
+  // Historique de CET appareil : ce qui est parti / pas encore parti à la console.
+  const localHisto = useMemo(() => {
+    return decLocalSids().filter(sid=>decLocalHasData(sid)).map(sid => {
+      const s = (allDecoupe||{})[sid]; const m = (s && s.meta) || decLocalMeta(sid);
+      const st = decLS(decStKey(sid), {}) || {};
+      const saisis = Object.values(st).filter(x=>x && typeof x==="object" && (x.portionsKbg || x.kgMontreuil || x.poidsDecoupe || x.done || (x.rob && (x.rob.meules||x.rob.morceaux)) || (x.pieces&&x.pieces.length))).length;
+      const lastAt = Math.max(0, ...Object.values(st).map(x=>(x&&x.at)||0));
+      return { id:sid, supplier:m.supplier||"Découpe", docNumber:m.docNumber||"", startedAt:m.startedAt||0, lastAt, saisis, pending:decIsPending(sid), syncedAt:decLS(decSyncKey(sid),0), onServer:!!(s&&s.meta&&s.meta.startedAt) };
+    }).filter(x=>x.saisis>0 || x.pending).sort((a,b)=>(b.lastAt||b.startedAt)-(a.lastAt||a.startedAt)).slice(0,15);
+  });
+  const nPending = localHisto.filter(x=>x.pending).length;
+  const [syncMsg, setSyncMsg] = useState("");
+  const syncNow = async () => { if (!__decOnline) { setSyncMsg("⚠️ Pas de réseau — tes saisies sont gardées sur la tablette, elles partiront dès le retour du wifi"); setTimeout(()=>setSyncMsg(""), 5000); return; } setSyncMsg("Envoi en cours…"); try { await decFlushAll(); } catch(e){} setSyncMsg(decPendingSids().length ? "⚠️ Pas de réseau — réessaie une fois la tablette connectée au wifi" : "✓ Tout est envoyé à la console"); setTimeout(()=>setSyncMsg(""), 5000); };
   const enCours = active.filter(s=>!s.finished && !s.sentDay);
   const finies  = active.filter(s=>s.finished || s.sentDay);
 
@@ -2661,6 +2800,31 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
         </div>
       </div>
       <div style={{padding:12, paddingBottom:40}}>
+        {/* ENVOI À LA CONSOLE : alerte réelle si des découpes sont restées sur la tablette (labo sans internet) */}
+        {nPending>0 && (
+          <div style={{background:"#b71c1c", color:"#fff", borderRadius:10, padding:"12px 14px", marginBottom:10, animation:"updPulse 1.5s infinite"}}>
+            <div style={{fontWeight:900, fontSize:15}}>⚠️ {nPending} découpe(s) PAS ENCORE ENVOYÉE(S) à la console</div>
+            <div style={{fontSize:12, margin:"4px 0 8px"}}>C'est gardé sur cette tablette. Connecte-la au wifi : l'envoi est automatique. Ne vide pas le cache, ne change pas de tablette.</div>
+            <button onClick={syncNow} style={{background:"#fff", color:"#b71c1c", border:"none", borderRadius:8, padding:"8px 14px", fontWeight:900, fontSize:14}}>🔄 Envoyer maintenant</button>
+          </div>
+        )}
+        {syncMsg && <div style={{background:"#fff8e1", border:"1px solid #ffe082", color:"#6d4c00", borderRadius:8, padding:"8px 12px", fontSize:13, fontWeight:700, marginBottom:10}}>{syncMsg}</div>}
+        {localHisto.length>0 && (
+          <div className="recap-card">
+            <h3>📤 Mes découpes sur cette tablette</h3>
+            <p style={{fontSize:11, color:"#999", margin:"0 0 8px"}}>Ce que tu as saisi ici, et si c'est bien arrivé à la console. {__decOnline?"● en ligne":"● hors ligne"}</p>
+            {localHisto.map(h => (
+              <div key={h.id} onClick={()=>onJoin(h.id)} style={{display:"flex", gap:8, alignItems:"center", padding:"8px 10px", marginTop:6, borderRadius:8, cursor:"pointer", background:h.pending?"#fdecea":"#f1f8f1", border:`1.5px solid ${h.pending?"#ef9a9a":"#c8e6c9"}`}}>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontWeight:700, fontSize:13}}>{h.supplier}{h.docNumber && !h.supplier.includes(h.docNumber) ? ` · BL ${h.docNumber}` : ""}</div>
+                  <div style={{fontSize:11, color:"#666"}}>Découpé le {new Date(h.lastAt||h.startedAt).toLocaleDateString("fr-FR")} · {h.saisis} fromage(s) saisi(s)</div>
+                </div>
+                <div style={{fontSize:12, fontWeight:900, whiteSpace:"nowrap", color:h.pending?"#b71c1c":"#2e7d32"}}>{h.pending?"⏳ À envoyer":`✓ Envoyé${h.syncedAt?(" "+fmtTime(h.syncedAt).slice(0,5)):""}`}</div>
+              </div>
+            ))}
+            {nPending===0 && <button className="btn-secondary" onClick={syncNow} style={{marginTop:8, fontSize:13}}>🔄 Vérifier l'envoi</button>}
+          </div>
+        )}
         {/* Traçabilité accessible dès l'accueil (photo étiquette + lot + DLC + magasin -> Drive) */}
         <div className="recap-card" style={{border:"1.5px solid #8a5a00"}}>
           <h3>🏷️ Traçabilité des fromages</h3>
@@ -2670,27 +2834,28 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
         {/* Découpe du jour LIBRE : commencer sans attendre le BL (rapprochement auto par n° BL). */}
         <div className="recap-card" style={{border:"1.5px solid #8a5a00"}}>
           <h3>🔪 Démarrer une découpe du jour</h3>
-          <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Pas besoin d'attendre le BL. Choisis l'entité, mets le n° de BL si tu le connais (sinon plus tard), et ajoute tes fromages au fur et à mesure.</p>
+          <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Choisis l'entité et mets le <b>n° de BL (obligatoire)</b> : ta découpe est reliée au BL chargé par le responsable (la liste des fromages se met à jour toute seule). Si la découpe de ce BL existe déjà, tu la rejoins.</p>
           <div style={{display:"flex", gap:8, marginBottom:8}}>
             {[["ROB","Robespierre (Montreuil)"],["KBG","Kelbongoo"]].map(([c,lbl])=>(
               <button key={c} onClick={()=>setStartEnt(c)} className="btn-secondary" style={{flex:1, background:startEnt===c?(c==="KBG"?"#1565c0":"#6a1b9a"):"#f0f0f0", color:startEnt===c?"#fff":"#333", fontWeight:700}}>{lbl}</button>
             ))}
           </div>
           <div style={{display:"flex", gap:8, alignItems:"flex-end"}}>
-            <div style={{flex:1}}><label style={{fontSize:11, fontWeight:700, color:"#666"}}>N° de BL (si connu)</label>
-              <input value={startBl} onChange={e=>setStartBl(e.target.value)} placeholder="Ex: 41270" style={{width:"100%", padding:10, border:"1.5px solid #ddd", borderRadius:8, fontSize:15}} /></div>
-            <button className="btn-cut" style={{flex:1, marginTop:0}} onClick={()=>onStart(startEnt, startBl)}>Commencer</button>
+            <div style={{flex:1}}><label style={{fontSize:11, fontWeight:700, color:startBl.trim()?"#666":"#c62828"}}>N° de BL (obligatoire)</label>
+              <input value={startBl} onChange={e=>setStartBl(e.target.value)} inputMode="numeric" placeholder="Ex: 41270" style={{width:"100%", padding:10, border:`1.5px solid ${startBl.trim()?"#ddd":"#ef9a9a"}`, borderRadius:8, fontSize:15}} /></div>
+            <button className="btn-cut" disabled={!startBl.trim()} style={{flex:1, marginTop:0, opacity:startBl.trim()?1:.45}} onClick={()=>{ if(!startBl.trim()){ alert("Mets le n° de BL pour commencer."); return; } onStart(startEnt, startBl); }}>Commencer</button>
           </div>
         </div>
         <div className="recap-card">
           <h3>🧀 Rejoindre une découpe en cours</h3>
-          <p style={{fontSize:11, color:"#999", margin:"0 0 8px"}}>Découpes <b>du jour</b> uniquement. Une seule par jour et par entité (Kelbongoo / Montreuil) : rejoins celle du jour au lieu d'en rouvrir une nouvelle. Le 🗑 supprime une découpe ouverte par erreur.</p>
-          {enCours.length===0 && <div style={{fontSize:13, color:"#888", padding:"6px 0"}}>Aucune découpe en cours aujourd'hui. Démarre-en une ci-dessus, ou l'admin charge le BL dans la console.</div>}
+          <p style={{fontSize:11, color:"#999", margin:"0 0 8px"}}>Découpes du jour + BL chargés par le responsable pas encore finis. Une seule découpe par BL et par entité. Le 🗑 supprime une découpe ouverte par erreur.</p>
+          {enCours.length===0 && <div style={{fontSize:13, color:"#888", padding:"6px 0"}}>Aucune découpe en cours. Démarre-en une ci-dessus, ou le responsable charge le BL dans la console.</div>}
           {enCours.map(s => (
             <div key={s.id} style={{display:"flex", gap:6, alignItems:"stretch", marginTop:6}}>
               <button className="btn-secondary" style={{textAlign:"left", padding:14, margin:0, flex:1}} onClick={()=>onJoin(s.id)}>
-                <div style={{fontWeight:700, marginBottom:2}}>{s.supplier||"Découpe"}</div>
-                <div style={{fontSize:11, color:"#666"}}>Démarré à {fmtTime(s.startedAt)} • {s.done}/{s.total} fromages faits</div>
+                <div style={{fontWeight:700, marginBottom:2}}>{s.supplier||"Découpe"}{s.docNumber && !String(s.supplier||"").includes(s.docNumber) ? ` · BL ${s.docNumber}` : ""}</div>
+                {s.loadedBy && <div style={{fontSize:11, color:"#1565c0", fontWeight:700, marginBottom:2}}>📦 BL chargé par le responsable ({s.loadedBy})</div>}
+                <div style={{fontSize:11, color:"#666"}}>{s.dk!==todayKey()?`Créée le ${new Date(s.startedAt).toLocaleDateString("fr-FR")} à ${fmtTime(s.startedAt)}`:`Démarré à ${fmtTime(s.startedAt)}`} • {s.done}/{s.total} fromages faits</div>
               </button>
               <button onClick={()=>deleteDecoupe(s.id, s.supplier)} title="Supprimer cette découpe" style={{width:52, background:"#fdecea", color:"#c62828", border:"1.5px solid #ffcdd2", borderRadius:8, fontSize:18, fontWeight:700}}>🗑</button>
             </div>
@@ -2770,10 +2935,13 @@ function decoupeTotals(products, state) {
     const ky=kbgYield(p,st); const theo=(ky.theo!=null?ky.theo:0);
     kbgN+=a.kbgN; kbgG+=a.kbgG; robN+=a.robN; robG+=a.robG; robMeules+=a.robMeules||0; kbgTheo+=theo; if(st.done) done++;
     if (a.total>0 || st.reception) lines.push({ designation:p.designation, article:p.article, poids:p.poids, tol:p.tol, kbgTarget:p.kbgTarget, robCmd:p.robCmd, sticker:!!st.sticker,
-      robMeules:a.robMeules||0, robUnit:(st.rob&&st.rob.unit)||"meule", reception:st.reception||"", theo:theo, rend:ky.rend, poidsRecu:Number(p.poidsRecu)||0, ...a }); });
+      robMeules:a.robMeules||0, robUnit:(st.rob&&st.rob.unit)||"meule", reception:st.reception||"", theo:theo, rend:ky.rend, poidsRecu:Number(p.poidsRecu)||0,
+      cutAt:(st.firstAt||st.at||0), cutDay:decDayOf(st.firstAt||st.at||0), ...a }); });
   const rendPortions = kbgTheo>0 ? Math.round(kbgN/kbgTheo*100) : null;
   return { kbgN, kbgG, robN, robG, robMeules, kbgTheo, rendPortions, done, total:(products||[]).length, lines, rend:rendement(kbgG,robG) };
 }
+// Jour (yyyy-mm-dd) d'un horodatage — sert à la « date de découpe » par fromage.
+function decDayOf(ts){ if(!ts) return ""; const d=new Date(ts); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
 // Écrit un résumé lisible par la console dans decoupe/<sid>/recap.
 function pushDecoupeRecap(sessionId, products, state, operator, entity) {
   if (!firebaseReady || !sessionId) return;
@@ -2781,7 +2949,8 @@ function pushDecoupeRecap(sessionId, products, state, operator, entity) {
   db.ref(`decoupe/${sessionId}/recap`).update({
     entity:entity||"", rendement:t.rend, rendementPortions:(t.rendPortions!=null?t.rendPortions:null), kbgN:t.kbgN, kbgTheo:t.kbgTheo, kbgG:Math.round(t.kbgG), robN:t.robN, robG:Math.round(t.robG),
     robMeules:Math.round(t.robMeules*100)/100, done:t.done, total:t.total,
-    lines:t.lines.map(l=>({ designation:l.designation, kbgN:l.kbgN, kbgTheo:l.theo||0, rend:(l.rend!=null?l.rend:null), kbgTarget:l.kbgTarget||0, robN:l.robN, kbgG:Math.round(l.kbgG), robG:Math.round(l.robG), poidsRecu:l.poidsRecu||0, robMeules:Math.round((l.robMeules||0)*100)/100, robUnit:l.robUnit||"meule", sticker:!!l.sticker })),
+    lines:t.lines.map(l=>({ designation:l.designation, kbgN:l.kbgN, kbgTheo:l.theo||0, rend:(l.rend!=null?l.rend:null), kbgTarget:l.kbgTarget||0, robN:l.robN, kbgG:Math.round(l.kbgG), robG:Math.round(l.robG), poidsRecu:l.poidsRecu||0, robMeules:Math.round((l.robMeules||0)*100)/100, robUnit:l.robUnit||"meule", sticker:!!l.sticker, cutAt:l.cutAt||0, cutDay:l.cutDay||"" })),
+    cutDays:[...new Set(t.lines.map(l=>l.cutDay).filter(Boolean))].sort(),
     updatedAt:Date.now(), by:(operator&&(operator.name||("#"+operator.code)))||""
   }).catch(()=>{});
 }
@@ -2798,9 +2967,12 @@ function dayDecoupeAgg(allDecoupe, dateKey) {
   Object.entries(allDecoupe||{}).forEach(([sid,s]) => {
     if (!s || !s.meta || !s.meta.startedAt) return;
     const d = new Date(s.meta.startedAt); const dk = `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
-    if (dk !== dateKey) return;
-    const prods = (s.meta.products)||[]; const st = s.state||{};
-    const t = decoupeTotals(prods, st);
+    const prods = decResolveList((s.meta.products)||[]); const st = s.state||{};
+    const t0 = decoupeTotals(prods, st);
+    // Jour = DATE DE DÉCOUPE de chaque fromage (un BL chargé la veille et découpé aujourd'hui compte aujourd'hui).
+    const dayLines = (t0.lines||[]).filter(l => (l.cutDay||dk) === dateKey);
+    if (dk !== dateKey && dayLines.length===0) return;
+    const t = { ...t0, lines:dayLines };
     if ((t.lines||[]).length===0 && !(t.kbgN||t.robN||t.robMeules)) return; // session vide → ignorée
     const ent = ((s.recap&&s.recap.entity)||s.meta.entity||"").toUpperCase();
     const routeRob = ent==="ROB" ? true : (ent==="KBG" ? false : null); // null = session sans entité → on route au fromage
@@ -3088,12 +3260,41 @@ function CheeseWeigh({ product, pkey, status, operator, connected, onSetRow, onC
    DÉCOUPE FROMAGE — écran principal (liste des fromages)
    ========================================================================= */
 function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLeave }) {
-  const { state, meta, connected, setRow, flushNow } = useDecoupeSession(sessionId, operator);
+  const { state, meta, serverMeta, connected, setRow, flushNow, ensureMeta, pending, syncedAt } = useDecoupeSession(sessionId, operator);
+  const [blEdit, setBlEdit] = useState("");
+  // Quitter : alerte bloquante si des saisies ne sont PAS encore arrivées à la console ;
+  // découpe vide (aucun fromage, rien saisi) → on ne laisse aucune ligne « parasite ».
+  const leave = () => {
+    if (pending) {
+      if (!confirm("⚠️ ATTENTION — DÉCOUPE PAS ENCORE ENVOYÉE À LA CONSOLE\n\nTes saisies sont gardées sur CETTE tablette mais la console ne les a pas encore.\nElles partiront automatiquement dès que la tablette retrouve internet (wifi).\n\n➜ NE VIDE PAS le cache et ne change pas de tablette.\n\nQuitter quand même ?")) return;
+    } else {
+      const noState = !state || Object.keys(state).length===0;
+      const noProd = !(serverMeta && Array.isArray(serverMeta.products) && serverMeta.products.length) && !(decLS(decPKey(sessionId), [])||[]).length;
+      if (noState && noProd) {
+        if (firebaseReady && serverMeta && serverMeta.libre) db.ref(`decoupe/${sessionId}`).remove().catch(()=>{});
+        decClearLocal(sessionId);
+      }
+    }
+    onLeave();
+  };
+  // Bouton « Retour / Précédent » de la tablette : il ne sort plus de l'app.
+  // Pesée ouverte → on la ferme ; sinon même chemin que « Quitter » (alerte si pas envoyé).
+  const backRef = useRef(null);
+  backRef.current = () => { if (cutKeyRef.current) { setCutKeyRef.current(null); return; } leave(); };
+  const cutKeyRef = useRef(null), setCutKeyRef = useRef(()=>{});
+  useEffect(() => { const h = () => { if (backRef.current) backRef.current(); }; window.addEventListener("centrale-back-decoupe", h); return () => window.removeEventListener("centrale-back-decoupe", h); }, []);
+  const saveBl = () => {
+    const bl = (blEdit||"").trim(); if (!bl) return;
+    try { const lm = decLocalMeta(sessionId); decLSset(decMetaKey(sessionId), { ...lm, docNumber:bl }); } catch(e){}
+    if (firebaseReady && sessionId && serverMeta) db.ref(`decoupe/${sessionId}/meta`).update({ docNumber:bl }).catch(()=>{});
+    setBlEdit("");
+  };
   const [saveMsg, setSaveMsg] = useState("");
   const prevConnRef = useRef(connected);
   useEffect(()=>{ if(!prevConnRef.current && connected){ setSaveMsg("✓ Reconnecté — saisies synchronisées"); setTimeout(()=>setSaveMsg(""),3500); } prevConnRef.current = connected; }, [connected]);
   const [search, setSearch] = useState("");
   const [cutKey, setCutKey] = useState(null);
+  cutKeyRef.current = cutKey; setCutKeyRef.current = setCutKey;
   const [tab, setTab] = useState("cut"); // cut | reception | traca
   const [labels, setLabels] = useState({});
   const [bls, setBls] = useState({});
@@ -3116,8 +3317,10 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
   const [newFr, setNewFr] = useState("");
   const [addManual, setAddManual] = useState(false); // saisie libre du nom (hors liste)
   // Repli hors-ligne : si Firebase n'a pas (encore) renvoyé la liste, on utilise la sauvegarde locale.
-  const lsProducts = useMemo(()=>{ try{ const a=JSON.parse(localStorage.getItem(decPKey(sessionId))||"[]"); return Array.isArray(a)?a:[]; }catch(e){ return []; } }, [sessionId, meta, connected]);
-  const srcProducts = (meta && Array.isArray(meta.products) && meta.products.length) ? meta.products : (lsProducts.length ? lsProducts : products);
+  const [prodTick, setProdTick] = useState(0);
+  const lsProducts = useMemo(()=>{ try{ const a=JSON.parse(localStorage.getItem(decPKey(sessionId))||"[]"); return Array.isArray(a)?a:[]; }catch(e){ return []; } }, [sessionId, meta, connected, prodTick]);
+  // Union serveur + appareil : un fromage ajouté hors ligne ne disparaît pas quand le BL (44 fromages) arrive.
+  const srcProducts = useMemo(() => { const u = decUnionProducts((meta && Array.isArray(meta.products)) ? meta.products : [], lsProducts); return u.length ? u : (products||[]); }, [meta, lsProducts, products]);
   const addFromage = (nomArg) => {
     const nom = ((nomArg!=null?nomArg:newFr)||"").trim(); if(!nom) return;
     const exists = srcProducts.some(p=>frKey(p,0)===frKey({designation:nom},0));
@@ -3126,7 +3329,10 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
     const np = { article:"", designation:nom, fournisseur:"", robCmd:0, kbgTarget:0, poids:(rp>0?rp:FROMAGE_DEFAULT_POIDS), tol:FROMAGE_DEFAULT_TOL };
     const next = [...srcProducts, np];
     try{ localStorage.setItem(decPKey(sessionId), JSON.stringify(next)); }catch(e){} // sauvegarde locale immédiate (marche hors ligne)
-    if (firebaseReady && sessionId) db.ref(`decoupe/${sessionId}/meta/products`).set(next);
+    const ts = decMarkDirty(sessionId);
+    ensureMeta(); // 1er fromage → la découpe apparaît dans « Rejoindre » et dans la console
+    if (firebaseReady && sessionId) db.ref(`decoupe/${sessionId}/meta/products`).set(next).then(()=>{ if (serverMeta && serverMeta.startedAt) decMarkSynced(sessionId, ts); }).catch(()=>{});
+    setProdTick(t=>t+1);
     setNewFr(""); setAddManual(false);
   };
   const list = useMemo(() => srcProducts.map((p,idx)=>{ const rp=kbgRefPoids(p.designation); return {...p, poids:(rp>0?rp:(p.poids||FROMAGE_DEFAULT_POIDS)), _pkey:frKey(p,idx)}; }).sort((a,b)=>a.designation.localeCompare(b.designation,"fr")), [srcProducts]);
@@ -3158,7 +3364,9 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
   // IMPORTANT : on pousse la liste RÉELLE affichée à l'opérateur (list = meta.products fusionnés,
   // poids résolus), et non le prop `products` qui reste vide en découpe libre. Sans ça, un fromage
   // ajouté à la volée (ex. Comté pour Kelbongoo) n'apparaissait ni dans le récap ni dans la console.
-  useEffect(() => { pushDecoupeRecap(sessionId, list, state, operator, meta&&meta.entity); }, [sessionId, list, state, meta]);
+  useEffect(() => { if (serverMeta && serverMeta.startedAt) pushDecoupeRecap(sessionId, list, state, operator, meta&&meta.entity); }, [sessionId, list, state, meta]);
+  // Étiquette traça / BL photographié sur une découpe pas encore créée → on crée l'en-tête (sinon invisible).
+  useEffect(() => { if ((Object.keys(labels||{}).length || Object.keys(bls||{}).length) && !(serverMeta && serverMeta.startedAt)) ensureMeta(); }, [labels, bls, serverMeta, ensureMeta]);
 
   const cutProduct = cutKey ? list.find(p=>p._pkey===cutKey) : null;
   if (cutProduct) {
@@ -3174,11 +3382,19 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
           <div><h1>🧀 {supplier||"Découpe"}</h1>
             <div className="sub">{BRAND} • {operator.name||("Code "+operator.code)}{meta&&meta.deliveryDate?` • récep. prévue ${meta.deliveryDate}`:""} • <span className={`conn-status ${!connected?"offline":""}`}>{connected?"● en ligne":"● hors ligne"}</span></div>
           </div>
-          <div className="header-actions"><button className="header-btn" onClick={onLeave}>Quitter</button></div>
+          <div className="header-actions"><button className="header-btn" onClick={leave}>Quitter</button></div>
         </div>
         <div className="progress-bar"><div className="progress-fill" style={{width:`${stats.total>0?(stats.done/stats.total)*100:0}%`}}></div></div>
         <div className="progress-text" style={{color:"rgba(255,255,255,.85)"}}><span>{stats.done} / {stats.total} fromages</span><span>{stats.total-stats.done} restants</span></div>
       </div>
+      {/* État d'envoi vers la console — toujours visible */}
+      {pending ? (
+        <div style={{background:"#b71c1c", color:"#fff", padding:"10px 12px", fontWeight:800, fontSize:14, textAlign:"center", animation:"updPulse 1.5s infinite"}}>
+          ⚠️ PAS ENCORE ENVOYÉ À LA CONSOLE — {connected?"envoi en cours…":"en attente d'internet"} · ne vide pas le cache
+        </div>
+      ) : (syncedAt>0 && (
+        <div style={{background:"#e8f5e9", color:"#1a4d2e", padding:"6px 12px", fontSize:12, fontWeight:700, textAlign:"center"}}>✓ Tout est envoyé à la console (dernier envoi {fmtTime(syncedAt)})</div>
+      ))}
 
       {!connected && (
         <div style={{background:"#c62828", color:"#fff", padding:"10px 12px", display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, flexWrap:"wrap"}}>
@@ -3236,7 +3452,13 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
                 </div>
               )}
             </div>
-            {meta&&meta.docNumber?<div style={{fontSize:11, color:"#777", margin:"0 2px 8px"}}>Lié au BL <b>n°{meta.docNumber}</b></div>:<div style={{fontSize:11, color:"#e65100", margin:"0 2px 8px"}}>⚠ Aucun n° BL sur cette découpe — le rapprochement se fera quand le BL sera chargé.</div>}
+            {meta&&meta.docNumber
+              ? <div style={{fontSize:11, color:"#777", margin:"0 2px 8px"}}>Lié au BL <b>n°{meta.docNumber}</b>{serverMeta&&serverMeta.loadedBy?<> · 📦 BL chargé par le responsable ({serverMeta.loadedBy})</>:<> · en attente du BL du responsable (la liste se complètera toute seule)</>}</div>
+              : <div style={{display:"flex", gap:6, alignItems:"center", background:"#fff3e0", border:"1.5px solid #e65100", borderRadius:8, padding:8, margin:"0 2px 8px"}}>
+                  <span style={{fontSize:12, color:"#e65100", fontWeight:800, flex:1}}>⚠ N° de BL manquant — obligatoire pour relier ta découpe au BL du responsable</span>
+                  <input value={blEdit} onChange={e=>setBlEdit(e.target.value)} placeholder="N° BL" inputMode="numeric" style={{width:90, padding:8, border:"1.5px solid #e65100", borderRadius:6, fontSize:14}} />
+                  <button onClick={saveBl} disabled={!blEdit.trim()} style={{padding:"8px 12px", borderRadius:6, background:blEdit.trim()?"#e65100":"#ccc", color:"#fff", fontWeight:800, border:"none"}}>OK</button>
+                </div>}
             {filtered.length===0 && <div style={{textAlign:"center", padding:40, color:"#999"}}>Aucun fromage. Ajoute-en un ci-dessus, ou attends le BL.</div>}
             {filtered.map(p => {
               const st = state[p._pkey]||{}; const agg = frAggFull(p, st); const isDone = st.done;
@@ -3333,7 +3555,7 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
           </div>
           <div className="bottom-bar">
             <div className="stats"><span>Avancement: <b>{stats.done}/{stats.total}</b></span><span>{stats.total>0?Math.round((stats.done/stats.total)*100):0}%</span></div>
-            <button className="btn-finish" onClick={()=>{ onFinish(state, list); }} disabled={stats.done===0} style={{background:"#8a5a00"}}>{stats.done===stats.total&&stats.total>0?"✓ Terminer → récap du jour":`Voir le récap du jour (${stats.done} faits)`}</button>
+            <button className="btn-finish" onClick={()=>{ if (pending && !confirm("⚠️ Une partie de ta découpe n'est PAS encore arrivée à la console (pas d'internet).\nLe récap du jour sera incomplet tant que la tablette n'est pas reconnectée.\n\nContinuer quand même ?")) return; onFinish(state, list); }} disabled={stats.done===0} style={{background:"#8a5a00"}}>{stats.done===stats.total&&stats.total>0?"✓ Terminer → récap du jour":`Voir le récap du jour (${stats.done} faits)`}</button>
           </div>
         </>
       )}
@@ -4070,6 +4292,40 @@ function App() {
   const allDecoupe = useAllDecoupe();
   const allVin = useInventaireVin();
 
+  // SYNCHRO AUTOMATIQUE découpe : à chaque retour d'internet + toutes les 20 s, tout ce qui est resté
+  // sur la tablette (labo sans réseau) part vers le serveur → la console est mise à jour sans rien faire.
+  useEffect(() => {
+    if (!firebaseReady) return;
+    const ref = db.ref(".info/connected");
+    const h = (snap)=>{ __decOnline = !!snap.val(); decSyncEmit(); if (__decOnline) decFlushAll(); };
+    ref.on("value", h);
+    const t = setInterval(()=>{ if (__decOnline) decFlushAll(); }, 20000);
+    return () => { ref.off("value", h); clearInterval(t); };
+  }, []);
+  // BOUTON RETOUR / PRÉCÉDENT (tablette, navigateur) : avant il faisait sortir de la page en pleine découpe
+  // (saisies en attente perdues en mémoire). Maintenant il navigue DANS l'app : pesée → découpe → accueil découpe → menu.
+  const navRef = useRef({});
+  navRef.current = { module, decView, decSessionId, dView, vinView };
+  useEffect(() => {
+    try { history.pushState({ centrale:1 }, ""); } catch(e){}
+    const onPop = () => {
+      try { history.pushState({ centrale:1 }, ""); } catch(e){} // on reste dans l'app
+      const n = navRef.current;
+      if (n.module==="decoupe") {
+        if (n.decView==="decoupe" && n.decSessionId) { window.dispatchEvent(new Event("centrale-back-decoupe")); return; }
+        if (n.decView==="recap") { setDecView("decoupe"); return; }
+        setModule(null); return;
+      }
+      if (n.module==="dispatch" && n.dView && n.dView!=="home") { setDView("home"); return; }
+      if (n.module==="vin" && n.vinView==="inv") { setVinView("home"); return; }
+      if (n.module) setModule(null);
+    };
+    window.addEventListener("popstate", onPop);
+    // Fermeture / rechargement de la page avec des découpes pas encore envoyées → avertissement du navigateur.
+    const onUnload = (e) => { if (decPendingSids().length) { e.preventDefault(); e.returnValue = "Découpe pas encore envoyée à la console."; return e.returnValue; } };
+    window.addEventListener("beforeunload", onUnload);
+    return () => { window.removeEventListener("popstate", onPop); window.removeEventListener("beforeunload", onUnload); };
+  }, []);
   // Forçage de MAJ : au démarrage + toutes les 10 min.
   useEffect(() => { centraleCheckVersion(); const t=setInterval(centraleCheckVersion, 10*60*1000); return ()=>clearInterval(t); }, []);
   // Expiration de session code (1 h) : déconnexion automatique -> reconnexion obligatoire.
@@ -4128,28 +4384,33 @@ function App() {
     if (firebaseReady) db.ref(`decoupe/${sid}/meta`).set({ supplier:sup, startedAt:Date.now(), products:prods, createdBy:opName });
     try { fetch(APPS_SCRIPT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"log-decoupe-start", sessionId:sid, supplier:sup, operator:opName, operatorCode:opObj.code, total:prods.length, startedAt:new Date().toISOString(), brand:BRAND }) }).catch(()=>{}); } catch(e){}
   };
+  // Rejoindre : sans attendre le serveur (marche hors ligne) — liste en mémoire, sinon sauvegarde de l'appareil.
   const handleDecoupeJoin = (sid) => {
-    if (!firebaseReady) return;
-    db.ref(`decoupe/${sid}/meta`).once("value").then(snap => { const m=snap.val(); if(m){ setDecSessionId(sid); setDecSupplier(m.supplier||"Découpe"); setDecProducts(m.products||[]); setDecEntity(m.entity||""); setDecView("decoupe"); } });
+    const s = (allDecoupe||{})[sid]; const m = (s && s.meta) || decLocalMeta(sid);
+    setDecSessionId(sid); setDecSupplier(m.supplier||"Découpe"); setDecProducts(m.products||[]); setDecEntity(m.entity||""); setModule("decoupe"); setDecView("decoupe");
   };
   // Découpe du jour LIBRE : l'opérateur commence sans BL. Session clé sur le n° BL (bl_<ent>_<num>) pour
   // converger avec le BL poussé par la console, sinon session « du jour ». .update pour ne pas écraser un BL déjà chargé.
+  // N° de BL OBLIGATOIRE : la découpe est clé sur bl_<entité>_<n°> = même clé que le BL chargé par le responsable
+  // dans la console → les 44 fromages du BL arrivent tout seuls dans la découpe (et inversement).
+  // Rien n'est écrit sur le serveur ici : l'en-tête n'est créé qu'au 1er fromage (plus de ligne « parasite »).
   const handleDecoupeStartLibre = (entity, blNum) => {
-    if (!firebaseReady) return;
     const ent = (entity||"ROB").toUpperCase();
     const bl = (blNum||"").toString().trim();
-    // Une SEULE découpe « du jour » par entité et par date : sid déterministe (sans horodatage aléatoire).
-    // Rouvrir « du jour » pour la même entité le même jour rejoint la même découpe au lieu d'en créer une nouvelle.
-    const sid = bl ? ("bl_"+ent.toLowerCase()+"_"+bl.replace(/[^a-zA-Z0-9]/g,"")) : ("jour_"+ent.toLowerCase()+"_"+todayKey().replace(/-/g,""));
-    const supLabel = (ent==="KBG"?"Découpe Kelbongoo":"Découpe Robespierre")+(bl?(" · BL "+bl):" · du jour");
-    db.ref(`decoupe/${sid}/meta`).once("value").then(snap => {
-      const m=snap.val();
-      if(m){ setDecSessionId(sid); setDecSupplier(m.supplier||supLabel); setDecProducts(m.products||[]); setDecEntity(m.entity||ent); setModule("decoupe"); setDecView("decoupe"); }
-      else {
-        db.ref(`decoupe/${sid}/meta`).update({ supplier:supLabel, entity:ent, docNumber:bl, startedAt:Date.now(), products:[], createdBy:opName, libre:true });
-        setDecSessionId(sid); setDecSupplier(supLabel); setDecProducts([]); setDecEntity(ent); setModule("decoupe"); setDecView("decoupe");
-      }
-    });
+    if (!bl) { alert("Le n° de BL est obligatoire pour démarrer une découpe."); return; }
+    const blKey = bl.replace(/[^a-zA-Z0-9]/g,"");
+    let sid = "bl_"+ent.toLowerCase()+"_"+blKey;
+    const all = allDecoupe||{};
+    if (!(all[sid] && all[sid].meta)) {
+      // Découpe déjà existante pour ce BL (autre identifiant : BL renseigné après coup, ancienne version…) → on la rejoint.
+      const found = Object.entries(all).find(([k,s]) => s && s.meta && s.meta.startedAt && String(s.meta.docNumber||"").replace(/[^a-zA-Z0-9]/g,"")===blKey && String(s.meta.entity||"").toUpperCase()===ent);
+      if (found) sid = found[0];
+    }
+    const s = all[sid];
+    const supLabel = (ent==="KBG"?"Découpe Kelbongoo":"Découpe Robespierre")+" · BL "+bl;
+    if (!(s && s.meta) && !decLocalHasData(sid)) decLSset(decMetaKey(sid), { supplier:supLabel, entity:ent, docNumber:bl, startedAt:Date.now(), createdBy:opName, libre:true });
+    const m = (s && s.meta) || decLocalMeta(sid);
+    setDecSessionId(sid); setDecSupplier(m.supplier||supLabel); setDecProducts(m.products||[]); setDecEntity(m.entity||ent); setModule("decoupe"); setDecView("decoupe");
   };
   const handleDecoupeFinish = (state, pk) => { setDecRecapData({ state, products:pk }); setDecView("recap"); };
   const handleDecoupeLeave = () => { setDecSessionId(""); setDecSupplier(""); setDecProducts([]); setDecEntity(""); setDecRecapData(null); setDecView("home"); };
