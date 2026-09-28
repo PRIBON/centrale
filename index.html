@@ -230,6 +230,30 @@ function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
   .keypad button.wide { grid-column:span 2; }
   .keypad button.act { background:#ef8f00; color:#fff; border-color:#ef8f00; }
   .keypad button.del { background:#fdecea; color:#c62828; border-color:#ffcdd2; }
+  /* ===== Pavé numérique (saisie poids / quantité sécurisée) ===== */
+  .np-back { position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:1200; display:flex; align-items:flex-end; justify-content:center; }
+  .np-sheet { background:#fff; border-radius:18px 18px 0 0; width:100%; max-width:460px; padding:14px 16px calc(16px + env(safe-area-inset-bottom)); box-shadow:0 -6px 24px rgba(0,0,0,.25); }
+  .np-title { font-size:15px; font-weight:900; color:#1a1a1a; text-align:center; }
+  .np-sub { font-size:12px; color:#777; text-align:center; margin:2px 0 8px; }
+  .np-unit { display:flex; gap:8px; margin:0 0 8px; }
+  .np-unit button { flex:1; padding:12px 0; border-radius:10px; border:2px solid #ddd; background:#fff; font-size:16px; font-weight:800; color:#555; }
+  .np-unit button.on { border-color:#8a5a00; background:#8a5a00; color:#fff; }
+  .np-disp { text-align:center; font-size:46px; font-weight:900; color:#1a1a1a; font-variant-numeric:tabular-nums; padding:4px 0 0; line-height:1.1; }
+  .np-disp .u { font-size:22px; color:#999; font-weight:800; margin-left:6px; }
+  .np-conv { text-align:center; font-size:13px; font-weight:700; color:#1565c0; min-height:18px; margin-bottom:6px; }
+  .np-warn { background:#fff3e0; border:1.5px solid #e65100; color:#c62828; border-radius:10px; padding:8px 10px; font-size:13px; font-weight:800; text-align:center; margin-bottom:8px; }
+  .np-pad { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .np-pad button { padding:20px 0; font-size:24px; font-weight:800; background:#f7f7f9; border:1.5px solid #e0e0e0; border-radius:12px; color:#1a1a1a; }
+  .np-pad button:active { background:#ececec; }
+  .np-pad button.del { background:#fdecea; color:#c62828; border-color:#ffcdd2; }
+  .np-pad button.clr { background:#f4f5f7; color:#777; }
+  .np-actions { display:flex; gap:8px; margin-top:10px; }
+  .np-actions button { flex:1; padding:14px; border-radius:12px; font-weight:800; font-size:15px; border:none; }
+  .np-actions .cancel { background:#f0f0f0; color:#555; }
+  .np-actions .ok { background:#2e7d32; color:#fff; }
+  .np-actions .ok.warn { background:#e65100; }
+  .numfield { width:100%; padding:8px; border-radius:6px; font-weight:800; text-align:center; background:#fff; cursor:pointer; }
+  .numfield.empty { color:#bbb; font-weight:600; }
   .piece-tally { display:flex; gap:10px; margin-bottom:12px; }
   .piece-tally .pt { flex:1; text-align:center; border-radius:10px; padding:10px; }
   .piece-tally .pt.kbg { background:#e3f2fd; }
@@ -294,7 +318,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch palette)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.5";
+const APP_VERSION = "v5.6";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -3257,6 +3281,86 @@ function CheeseWeigh({ product, pkey, status, operator, connected, onSetRow, onC
 }
 
 /* =========================================================================
+   PAVÉ NUMÉRIQUE — saisie poids / quantité fiable et sécurisée
+   - Remplace le clavier natif (fini le « chiffre qui ne se note pas »).
+   - Mode "poids" : bascule kg / g pour éviter 100000 g au lieu de 10 kg.
+   - Garde-fou : alerte si le poids saisi est manifestement anormal.
+   La valeur renvoyée est toujours dans l'unité de référence du champ
+   (kg pour un poids, entier pour une quantité).
+   ========================================================================= */
+// Seuils de vraisemblance (par fromage) : au-delà, on demande une confirmation.
+const NP_MAX_KG = 300;      // un seul fromage > 300 kg = quasi sûrement une erreur
+const NP_MAX_COUNT = 3000;  // > 3000 portions/pièces = quasi sûrement une erreur
+function NumPad({ title, sub, mode, value, onValidate, onClose }) {
+  const isW = mode === "weight";
+  const [unit, setUnit] = React.useState("kg");   // poids uniquement
+  const [str, setStr]   = React.useState("");
+  const [confirmWarn, setConfirmWarn] = React.useState(false);
+  // Pré-remplissage depuis la valeur actuelle (une seule fois).
+  React.useEffect(() => {
+    if (value==null || value==="") { setStr(""); return; }
+    if (!isW) { const n=parseInt(value,10)||0; setStr(n?String(n):""); }
+    else { const kg=Number(value)||0; setStr(kg?String(kg).replace(".",","):""); setUnit("kg"); }
+  }, []); // eslint-disable-line
+  const maxLen = isW ? 7 : 5;
+  const tap = (d) => { setConfirmWarn(false); setStr(v => {
+    if (d===",") { if (!isW || v.includes(",")) return v; return v===""?"0,":v+","; }
+    if (v.replace(/[^0-9]/g,"").length >= maxLen) return v;
+    if (v==="0") return d;                 // pas de zéro en tête
+    return v + d;
+  }); };
+  const del   = () => { setConfirmWarn(false); setStr(v=>v.slice(0,-1)); };
+  const clear = () => { setConfirmWarn(false); setStr(""); };
+  const raw   = str==="" ? 0 : (parseFloat(str.replace(",","."))||0);
+  // Valeur canonique (kg pour un poids, entier pour une quantité).
+  const canon = isW ? (unit==="g" ? Math.round(raw)/1000 : raw) : (parseInt(str||"0",10)||0);
+  const abnormal = isW ? (canon > NP_MAX_KG) : (canon > NP_MAX_COUNT);
+  const validate = () => {
+    if (abnormal && !confirmWarn) { setConfirmWarn(true); return; }
+    onValidate(str===""?"":canon);
+    onClose();
+  };
+  return (
+    <div className="np-back" onClick={onClose}>
+      <div className="np-sheet" onClick={e=>e.stopPropagation()}>
+        <div className="np-title">{title}</div>
+        {sub && <div className="np-sub">{sub}</div>}
+        {isW && (
+          <div className="np-unit">
+            <button className={unit==="kg"?"on":""} onClick={()=>{ setConfirmWarn(false); setUnit("kg"); }}>kg</button>
+            <button className={unit==="g"?"on":""} onClick={()=>{ setConfirmWarn(false); setUnit("g"); }}>grammes (g)</button>
+          </div>
+        )}
+        <div className="np-disp">{str||"0"}<span className="u">{isW?unit:""}</span></div>
+        <div className="np-conv">{isW && unit==="g" && raw>0 ? `= ${(Math.round(raw)/1000).toString().replace(".",",")} kg` : ""}</div>
+        {abnormal && confirmWarn && (
+          <div className="np-warn">⚠️ {isW?`${canon.toString().replace(".",",")} kg`:`${canon} pièces`} pour un seul fromage, c'est inhabituel. {isW?"As-tu confondu kg et g ?":""} Appuie sur « Confirmer » si c'est correct.</div>
+        )}
+        <div className="np-pad">
+          {["7","8","9","4","5","6","1","2","3"].map(d=><button key={d} onClick={()=>tap(d)}>{d}</button>)}
+          {isW ? <button onClick={()=>tap(",")}>,</button> : <button className="clr" onClick={clear}>C</button>}
+          <button onClick={()=>tap("0")}>0</button>
+          <button className="del" onClick={del}>⌫</button>
+        </div>
+        <div className="np-actions">
+          <button className="cancel" onClick={onClose}>Annuler</button>
+          <button className={"ok"+(abnormal&&confirmWarn?" warn":"")} onClick={validate}>{abnormal&&confirmWarn?"Confirmer quand même":"Valider"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+// Champ « tapable » qui ouvre le pavé numérique. `display` = texte affiché.
+function NumField({ display, empty, color, onOpen, borderColor, big }) {
+  return (
+    <button type="button" className={"numfield"+(empty?" empty":"")} onClick={onOpen}
+      style={{ border:`2px solid ${borderColor||"#ddd"}`, fontSize:big?22:16, color:color||"#1a1a1a", minHeight:big?44:40 }}>
+      {display}
+    </button>
+  );
+}
+
+/* =========================================================================
    DÉCOUPE FROMAGE — écran principal (liste des fromages)
    ========================================================================= */
 function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLeave }) {
@@ -3298,6 +3402,8 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
   const [tab, setTab] = useState("cut"); // cut | reception | traca
   const [labels, setLabels] = useState({});
   const [bls, setBls] = useState({});
+  // Pavé numérique : { title, sub, mode:"weight"|"count", value, commit(val) }
+  const [pad, setPad] = useState(null);
 
   useEffect(() => {
     if (!firebaseReady || !sessionId) return;
@@ -3377,6 +3483,8 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
 
   return (
     <div className="app">
+      {pad && <NumPad title={pad.title} sub={pad.sub} mode={pad.mode} value={pad.value}
+        onValidate={(val)=>pad.commit(val)} onClose={()=>setPad(null)} />}
       <div className="header fr-head" style={{background:"#8a5a00"}}>
         <div className="header-row">
           <div><h1>🧀 {supplier||"Découpe"}</h1>
@@ -3475,7 +3583,29 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
               return (
                 <div className={`cheese-card ${isDone?"done":""}`} key={p._pkey}>
                   <div className="cc-name">{p.designation}{isDone && <span className="done-badge" style={{marginLeft:8}}>✓ {st.doneBy}</span>}{rec==="ok"&&<span className="badge" style={{marginLeft:6, background:"#e8f5e9", color:"#2e7d32", fontSize:11, padding:"2px 7px", borderRadius:9}}>reçu</span>}{rec==="nonconf"&&<span className="badge" style={{marginLeft:6, background:"#fdecea", color:"#c62828", fontSize:11, padding:"2px 7px", borderRadius:9}}>non conf.</span>}</div>
-                  {isRob ? (<>
+                  {/* ---- À LA PIÈCE : fromage NON découpé, vendu tel quel ---- */}
+                  <label style={{display:"flex", alignItems:"center", gap:8, fontSize:13, margin:"2px 0 8px", padding:"8px 10px", fontWeight:800, color:st.sticker?"#e65100":"#555", background:st.sticker?"#fff3e0":"#f7f7f9", border:`1.5px solid ${st.sticker?"#e65100":"#e0e0e0"}`, borderRadius:8}}>
+                    <input type="checkbox" checked={!!st.sticker} onChange={e=>setSticker(p._pkey,{sticker:e.target.checked})} style={{width:20, height:20}} />
+                    🔖 Pas à découper — vendu à la pièce
+                  </label>
+
+                  {st.sticker ? (
+                    /* Vendu à la pièce : on ne découpe pas, on note juste le nombre de pièces + le magasin. */
+                    <div style={{marginBottom:6}}>
+                      <div style={{fontSize:12, color:"#e65100", fontWeight:700, marginBottom:6}}>Ce fromage n'est pas découpé. Indique le nombre de pièces vendues telles quelles.</div>
+                      <div style={{display:"flex", gap:6, alignItems:"flex-end", marginBottom:6}}>
+                        <div style={{flex:1}}><label style={{fontSize:11, fontWeight:800, color:"#666"}}>Nombre de pièces</label>
+                          <NumField big color="#e65100" borderColor="#e65100"
+                            empty={st.stickerCount==null||st.stickerCount===""||!st.stickerCount}
+                            display={st.stickerCount?String(st.stickerCount):"0"}
+                            onOpen={()=>setPad({ title:p.designation, sub:"Nombre de pièces (à la pièce)", mode:"count", value:st.stickerCount, commit:(v)=>setSticker(p._pkey,{stickerCount:(v===""?0:v)}) })} /></div>
+                        <div style={{flex:1.4}}><label style={{fontSize:11, fontWeight:800, color:"#666"}}>Magasin</label>
+                          <div style={{display:"flex", gap:4}}>
+                            {FROMAGE_ENTITES.map(e=>(<button key={e.code} onClick={()=>setSticker(p._pkey,{magasin:e.code})} style={{flex:1, padding:10, borderRadius:6, fontSize:13, fontWeight:800, border:"none", background:mag===e.code?(e.code==="KBG"?"#1565c0":"#6a1b9a"):"#eef2f7", color:mag===e.code?"#fff":"#333"}}>{e.code}</button>))}
+                          </div></div>
+                      </div>
+                    </div>
+                  ) : isRob ? (<>
                   <div className="cc-tar">
                     <div className="tgt rob" style={{flex:1}}><span className="big">{meules}</span>{robUnit==="meule"?"meule(s)":"colis"} découpé(s){p.robCmd>0?` · cmd ${p.robCmd}`:""}</div>
                     <div className="tgt" style={{flex:1, background:"#ede7f6", color:"#5e35b1"}}><span className="big">{agg.robN}</span>morceaux{kgApprox>0?` · ≈ ${kgApprox} kg`:""}</div>
@@ -3488,10 +3618,16 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
                     <button onClick={()=>setRow(p._pkey,{rob:{...rob, meules:0, type:"libre"}})} title="Réinitialiser" style={{padding:"12px 12px", borderRadius:6, border:"1.5px solid #ddd", background:"#fafafa", color:"#c62828", fontSize:15, fontWeight:700}}>↺</button>
                   </div>
                   <div style={{display:"flex", gap:6, alignItems:"flex-end", marginBottom:6}}>
-                    <div style={{flex:1}}><label style={{fontSize:11, fontWeight:800, color:"#6a1b9a"}}>Poids total envoyé à Montreuil (kg)</label>
-                      <input type="number" inputMode="decimal" min="0" step="0.1" value={st.poidsDecoupe!=null?st.poidsDecoupe:""} onChange={e=>setRow(p._pkey,{poidsDecoupe:e.target.value===""?"":(parseFloat(String(e.target.value).replace(",","."))||0)})} placeholder="ex: 12,5" style={{width:"100%", padding:8, border:"2px solid #6a1b9a", borderRadius:6, fontSize:18, fontWeight:800, textAlign:"center", color:"#6a1b9a"}} /></div>
+                    <div style={{flex:1}}><label style={{fontSize:11, fontWeight:800, color:"#6a1b9a"}}>Poids total → Montreuil</label>
+                      <NumField big color="#6a1b9a" borderColor="#6a1b9a"
+                        empty={st.poidsDecoupe==null||st.poidsDecoupe===""}
+                        display={(st.poidsDecoupe!=null&&st.poidsDecoupe!=="")?`${String(st.poidsDecoupe).replace(".",",")} kg`:"— kg"}
+                        onOpen={()=>setPad({ title:p.designation, sub:"Poids total envoyé à Montreuil", mode:"weight", value:st.poidsDecoupe, commit:(v)=>setRow(p._pkey,{poidsDecoupe:v}) })} /></div>
                     <div style={{flex:1}}><label style={{fontSize:11, fontWeight:700, color:"#666"}}>Morceaux (option.)</label>
-                      <input type="number" inputMode="numeric" min="0" value={rob.morceaux!=null?rob.morceaux:""} onChange={e=>setRow(p._pkey,{rob:{...rob, morceaux:parseInt(e.target.value,10)||0}})} placeholder="0" style={{width:"100%", padding:8, border:"1.5px solid #ddd", borderRadius:6, fontSize:16, fontWeight:700, textAlign:"center"}} /></div>
+                      <NumField color="#333" borderColor="#ddd"
+                        empty={!rob.morceaux}
+                        display={rob.morceaux?String(rob.morceaux):"0"}
+                        onOpen={()=>setPad({ title:p.designation, sub:"Nombre de morceaux (optionnel)", mode:"count", value:rob.morceaux, commit:(v)=>setRow(p._pkey,{rob:{...rob, morceaux:(v===""?0:v)}}) })} /></div>
                   </div>
                   {recuKg>0 && (
                     <div style={{display:"flex", gap:8, fontSize:12, background:"#faf6ff", border:"1px solid #e1c9f0", borderRadius:8, padding:"7px 10px", marginBottom:8}}>
@@ -3513,11 +3649,17 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
                     <div style={{flex:1.5}}><label style={{fontSize:11, fontWeight:800, color:"#1565c0"}}>Portions Kelbongoo</label>
                       <div style={{display:"flex", gap:4, alignItems:"center"}}>
                         <button onClick={()=>setRow(p._pkey,{portionsKbg:Math.max(0,(Number(st.portionsKbg)||0)-1)})} style={{width:42, padding:10, borderRadius:6, border:"1.5px solid #90caf9", background:"#fff", color:"#1565c0", fontSize:20, fontWeight:800}}>−</button>
-                        <input type="number" inputMode="numeric" min="0" value={st.portionsKbg!=null?st.portionsKbg:""} onChange={e=>setRow(p._pkey,{portionsKbg:e.target.value===""?"":(parseInt(e.target.value,10)||0)})} placeholder="0" style={{flex:1, padding:8, border:"2px solid #1565c0", borderRadius:6, fontSize:22, fontWeight:800, textAlign:"center", color:"#1565c0"}} />
+                        <NumField big color="#1565c0" borderColor="#1565c0"
+                          empty={st.portionsKbg==null||st.portionsKbg===""}
+                          display={(st.portionsKbg!=null&&st.portionsKbg!=="")?String(st.portionsKbg):"0"}
+                          onOpen={()=>setPad({ title:p.designation, sub:"Nombre de portions Kelbongoo", mode:"count", value:st.portionsKbg, commit:(v)=>setRow(p._pkey,{portionsKbg:v}) })} />
                         <button onClick={()=>setRow(p._pkey,{portionsKbg:(Number(st.portionsKbg)||0)+1})} style={{width:42, padding:10, borderRadius:6, border:"1.5px solid #90caf9", background:"#fff", color:"#1565c0", fontSize:20, fontWeight:800}}>+</button>
                       </div></div>
-                    <div style={{flex:1}}><label style={{fontSize:11, fontWeight:800, color:"#6a1b9a"}}>→ Montreuil (kg)</label>
-                      <input type="number" inputMode="decimal" min="0" step="0.1" value={st.kgMontreuil!=null?st.kgMontreuil:""} onChange={e=>setRow(p._pkey,{kgMontreuil:e.target.value===""?"":(parseFloat(String(e.target.value).replace(",","."))||0)})} placeholder="0" style={{width:"100%", padding:8, border:"2px solid #6a1b9a", borderRadius:6, fontSize:18, fontWeight:800, textAlign:"center", color:"#6a1b9a"}} /></div>
+                    <div style={{flex:1}}><label style={{fontSize:11, fontWeight:800, color:"#6a1b9a"}}>→ Montreuil</label>
+                      <NumField big color="#6a1b9a" borderColor="#6a1b9a"
+                        empty={st.kgMontreuil==null||st.kgMontreuil===""}
+                        display={(st.kgMontreuil!=null&&st.kgMontreuil!=="")?`${String(st.kgMontreuil).replace(".",",")} kg`:"— kg"}
+                        onOpen={()=>setPad({ title:p.designation, sub:"Poids parti à Montreuil (hors gabarit)", mode:"weight", value:st.kgMontreuil, commit:(v)=>setRow(p._pkey,{kgMontreuil:v}) })} /></div>
                   </div>
                   {recuKg>0 ? (
                     <div style={{display:"flex", gap:8, fontSize:12, background:"#f5faff", border:"1px solid #cfe3f5", borderRadius:8, padding:"7px 10px", marginBottom:8, flexWrap:"wrap"}}>
@@ -3528,21 +3670,6 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
                     </div>
                   ) : (
                     <div style={{fontSize:11, color:"#e65100", marginBottom:8}}>⚠ Poids meule (BL) inconnu — le rendement s'affichera quand le BL sera chargé.</div>
-                  )}
-                  {/* Déjà en pièces (sticker) : reçu déjà portionné, pas de découpe. */}
-                  <label style={{display:"flex", alignItems:"center", gap:8, fontSize:13, margin:"2px 0 6px", fontWeight:600, color:"#555"}}>
-                    <input type="checkbox" checked={!!st.sticker} onChange={e=>setSticker(p._pkey,{sticker:e.target.checked})} style={{width:18, height:18}} />
-                    Déjà en pièces (sticker uniquement, pas de découpe)
-                  </label>
-                  {st.sticker && (
-                    <div style={{display:"flex", gap:6, alignItems:"flex-end", marginBottom:8}}>
-                      <div style={{flex:1}}><label style={{fontSize:11, fontWeight:700, color:"#666"}}>Nb pièces</label>
-                        <input type="number" inputMode="numeric" value={st.stickerCount!=null?st.stickerCount:""} onChange={e=>setSticker(p._pkey,{stickerCount:parseInt(e.target.value,10)||0})} style={{width:"100%", padding:8, border:"1.5px solid #ddd", borderRadius:6, fontSize:16, fontWeight:700, textAlign:"center"}} /></div>
-                      <div style={{flex:1.4}}><label style={{fontSize:11, fontWeight:700, color:"#666"}}>Magasin</label>
-                        <div style={{display:"flex", gap:4}}>
-                          {FROMAGE_ENTITES.map(e=>(<button key={e.code} onClick={()=>setSticker(p._pkey,{magasin:e.code})} style={{flex:1, padding:8, borderRadius:6, fontSize:12, fontWeight:700, background:mag===e.code?(e.code==="KBG"?"#1565c0":"#6a1b9a"):"#eef2f7", color:mag===e.code?"#fff":"#333"}}>{e.code}</button>))}
-                        </div></div>
-                    </div>
                   )}
                   </>); })()}
                   </>)}
