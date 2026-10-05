@@ -341,7 +341,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.8";
+const APP_VERSION = "v5.8.1";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -4110,7 +4110,7 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
   const [showMissing, setShowMissing] = useState(false); // popup des vins non comptés (inventaire ciblé)
   const [linkQuery, setLinkQuery] = useState("");        // recherche pour lier un scan inconnu à la liste
   const scanRef = useRef(null);
-  const focusScan = () => { setTimeout(()=>{ if (scanRef.current) scanRef.current.focus(); }, 30); };
+  const focusScan = () => { setTimeout(()=>{ if (scanRef.current) scanRef.current.focus({ preventScroll:true }); }, 30); };
   useEffect(()=>{ focusScan(); }, []);
   const flash = (m) => { setToast(m); setTimeout(()=>setToast(""), 1100); };
   const opBy = operator.name || ("Code " + operator.code);
@@ -4505,7 +4505,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave }) {
   // Clavier écran masqué tant qu'on ne touche pas le champ (la douchette Zebra n'en a pas besoin).
   const [kbOn, setKbOn] = useState(false);
   const scanRef = useRef(null);
-  const focusScan = () => { setTimeout(()=>{ if (scanRef.current && !editK) scanRef.current.focus(); }, 40); };
+  const focusScan = () => { setTimeout(()=>{ if (scanRef.current && !editK) scanRef.current.focus({ preventScroll:true }); }, 40); };
   useEffect(()=>{ focusScan(); }, []);
   const flash = (m, ms) => { setToast(m); setTimeout(()=>setToast(""), ms||1400); };
   const opBy = operator.name || ("Code " + operator.code);
@@ -5028,7 +5028,7 @@ try {
       e.preventDefault();
       var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
       setter.call(inp, code); inp.dispatchEvent(new Event("input", { bubbles:true }));
-      inp.focus();
+      inp.focus({ preventScroll:true });
       setTimeout(function(){ inp.dispatchEvent(new KeyboardEvent("keydown", { key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true })); }, 40);
       return;
     }
