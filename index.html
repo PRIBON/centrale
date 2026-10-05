@@ -289,6 +289,9 @@ function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
   @media (max-width: 360px) {
     .scan-search-input { font-size:18px; padding:12px 40px 12px 12px; }
   }
+  /* v5.9 — onglets Picking dans l'en-tête collant */
+  .pk-tabs { position:static; margin:10px -16px -12px; border-bottom:none; }
+  @media (max-width: 400px) { .pk-tabs { margin:8px -10px -12px; } }
   /* v5.7 — ZEBRA MC220J (4", ~320×530 px CSS) : tout le menu et les modules tiennent sans défilement horizontal */
   @media (max-width: 400px) {
     .land { padding:14px 10px 30px; }
@@ -341,7 +344,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.8.1";
+const APP_VERSION = "v5.9";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -4504,6 +4507,8 @@ function PickingScreen({ pickingId, pick, operator, onLeave }) {
   const [closing, setClosing] = useState(false);
   // Clavier écran masqué tant qu'on ne touche pas le champ (la douchette Zebra n'en a pas besoin).
   const [kbOn, setKbOn] = useState(false);
+  // Onglets comme le dispatch : « À faire » (les validés disparaissent) / « Validés » (revoir, corriger, annuler).
+  const [showDone, setShowDone] = useState(false);
   const scanRef = useRef(null);
   const focusScan = () => { setTimeout(()=>{ if (scanRef.current && !editK) scanRef.current.focus({ preventScroll:true }); }, 40); };
   useEffect(()=>{ focusScan(); }, []);
@@ -4519,16 +4524,22 @@ function PickingScreen({ pickingId, pick, operator, onLeave }) {
   // Recherche (fournisseur, produit, code) dans le même champ que le scan.
   const q = stripAccents(String(scan||"").toLowerCase()).trim();
   const searching = q.length >= 2;
-  const shownGroups = useMemo(() => {
-    if (!searching) return groups;
+  const isDone = (p) => !!(state[p.k] && state[p.k].done);
+  const filterGroups = (wantDone) => {
     const toks = q.split(/\s+/).filter(Boolean);
     const hit = (t) => { const x = stripAccents(String(t||"").toLowerCase()); return toks.every(w => x.includes(w)); };
     return groups.map(g => {
-      if (hit(g.name) || g.codes.some(hit)) return g;
-      const items = g.items.filter(p => hit(p.designation) || hit(p.ean) || hit(p.ref));
-      return items.length ? Object.assign({}, g, { items }) : null;
+      let items = g.items.filter(p => isDone(p) === wantDone);
+      if (searching && !(hit(g.name) || g.codes.some(hit))) items = items.filter(p => hit(p.designation) || hit(p.ean) || hit(p.ref));
+      return items.length ? Object.assign({}, g, { items, all:g.items }) : null;
     }).filter(Boolean);
-  }, [groups, q, searching]);
+  };
+  const todoGroups = useMemo(() => filterGroups(false), [groups, q, searching, state]);
+  const doneGroups = useMemo(() => filterGroups(true),  [groups, q, searching, state]);
+  const shownGroups = showDone ? doneGroups : todoGroups;
+  const otherGroups = showDone ? todoGroups : doneGroups;
+  const countItems = (gs) => gs.reduce((a,g)=>a+g.items.length, 0);
+  const nTodo = products.filter(p => !isDone(p)).length, nDone = products.length - nTodo;
   const eanIdx = useMemo(() => { const m={}; products.forEach(p => { const e=pkEanNorm(p.ean); if (e && !m[e]) m[e]=p; }); return m; }, [products]);
   const stx = pickingStats(pick);
 
@@ -4563,7 +4574,9 @@ function PickingScreen({ pickingId, pick, operator, onLeave }) {
     if (/[a-zA-ZÀ-ÿ]/.test(txt) && tail && eanIdx[pkEanNorm(tail[1])]) raw = tail[1];
     else if (/[a-zA-ZÀ-ÿ]/.test(txt)) {
       const items = shownGroups.reduce((a,g)=>a.concat(g.items), []);
+      const others = otherGroups.reduce((a,g)=>a.concat(g.items), []);
       if (items.length === 1) { setScan(""); openEdit(items[0]); }
+      else if (items.length === 0 && others.length === 1) { setScan(""); openEdit(others[0]); }
       return;
     }
     const ean = pkEanNorm(extractEan(raw));
@@ -4644,7 +4657,12 @@ function PickingScreen({ pickingId, pick, operator, onLeave }) {
           </div>
           <div className="header-actions"><button className="header-btn" onClick={onLeave}>← Retour</button></div>
         </div>
+        <div className="tabs-bar pk-tabs">
+          <button className={`tab ${!showDone?"active":""}`} style={!showDone?{color:PICKING_COLOR, borderBottomColor:PICKING_COLOR, background:PICKING_BG}:{}} onClick={()=>setShowDone(false)}>À faire ({nTodo})</button>
+          <button className={`tab ${showDone?"active":""}`} style={showDone?{color:"#2e7d32", borderBottomColor:"#2e7d32", background:"#e8f5e9"}:{}} onClick={()=>setShowDone(true)}>✓ Validés ({nDone}){stx.short?` · ⚠${stx.short}`:""}</button>
+        </div>
       </div>
+
 
       <div style={{padding:14, paddingBottom:140, maxWidth:720, margin:"0 auto"}}>
         {closed && <div style={{marginBottom:10, padding:"10px 12px", borderRadius:10, background:"#e8f5e9", border:"1.5px solid #2e7d32", color:"#2e7d32", fontWeight:800, fontSize:14}}>✓ Picking clôturé par {closed.by||"—"} à {fmtTime(closed.at)}</div>}
@@ -4663,18 +4681,25 @@ function PickingScreen({ pickingId, pick, operator, onLeave }) {
           {scan && <button onClick={()=>{ setScan(""); focusScan(); }} aria-label="Effacer"
             style={{position:"absolute", right:8, top:"50%", transform:"translateY(-50%)", width:34, height:34, borderRadius:17, background:"#eef2f7", color:"#555", fontSize:18, fontWeight:900}}>✕</button>}
         </div>
-        <div style={{fontSize:11, color:"#888", margin:"-4px 2px 12px"}}>Carton entier non ouvert : touche <b style={{color:PICKING_COLOR}}>✓</b> sur la ligne. Touche la ligne pour une autre quantité ou pour modifier.</div>
-        {searching && shownGroups.length===0 && <div className="admin-note">Aucun fournisseur ni produit pour « {scan} ».</div>}
+        <div style={{fontSize:11, color:"#888", margin:"-4px 2px 12px"}}>{showDone
+          ? <>Produits déjà mis sur la palette. Touche une ligne pour <b>corriger</b> la quantité ou <b>annuler</b>.</>
+          : <>Carton entier non ouvert : touche <b style={{color:PICKING_COLOR}}>✓</b> sur la ligne. Touche la ligne pour une autre quantité. Une fois validé, le produit passe dans <b>Validés</b>.</>}</div>
+        {searching && shownGroups.length===0 && <div className="admin-note">Aucun résultat ici pour « {scan} ».
+          {countItems(otherGroups)>0 && <> <button onClick={()=>setShowDone(!showDone)} style={{marginLeft:6, padding:"4px 10px", borderRadius:8, background:showDone?PICKING_BG:"#e8f5e9", color:showDone?PICKING_COLOR:"#2e7d32", fontWeight:800, fontSize:12}}>{countItems(otherGroups)} dans {showDone?"À faire":"Validés"} →</button></>}</div>}
+        {!searching && !showDone && nTodo===0 && products.length>0 && <div style={{textAlign:"center", padding:"18px 10px", color:"#2e7d32", fontWeight:800}}>✓ Tout est validé. Vérifie l'onglet <b>Validés</b> si besoin, puis clôture le picking.</div>}
+        {!searching && showDone && nDone===0 && <div className="admin-note">Rien de validé pour l'instant.</div>}
 
         {shownGroups.map(g => {
-          const gDone = g.items.filter(p => state[p.k] && state[p.k].done).length;
-          const gShort = g.items.filter(p => state[p.k] && state[p.k].done && (Number(state[p.k].picked)||0) < (Number(p.qty)||0)).length;
-          const full = gDone === g.items.length;
+          const all = g.all || g.items;
+          const gDone = all.filter(p => state[p.k] && state[p.k].done).length;
+          const gShort = all.filter(p => state[p.k] && state[p.k].done && (Number(state[p.k].picked)||0) < (Number(p.qty)||0)).length;
+          const full = gDone === all.length;
           // Fournisseurs REPLIÉS à l'ouverture : on choisit celui par lequel on commence. Recherche = tout déplié.
-          const isOpen = searching || !!openSup[g.name];
+          const supKey = (showDone?"v_":"a_") + g.name;
+          const isOpen = searching || !!openSup[supKey];
           return (
             <div key={g.name} style={{background:"#fff", borderRadius:12, marginBottom:10, border:"1.5px solid "+(full?(gShort?"#ffcc80":"#a5d6a7"):"#cfd8e3"), overflow:"hidden"}}>
-              <div onClick={()=>setOpenSup(o=>Object.assign({}, o, {[g.name]:!isOpen}))}
+              <div onClick={()=>setOpenSup(o=>Object.assign({}, o, {[supKey]:!isOpen}))}
                 style={{display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, padding:"12px 14px", cursor:"pointer", background:full?(gShort?"#fff3e0":"#e8f5e9"):PICKING_BG}}>
                 <div style={{minWidth:0}}>
                   <div style={{fontWeight:900, fontSize:16, color:"#1a237e", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>🏷️ {g.name}</div>
@@ -4682,7 +4707,8 @@ function PickingScreen({ pickingId, pick, operator, onLeave }) {
                 </div>
                 <div style={{display:"flex", alignItems:"center", gap:8, whiteSpace:"nowrap"}}>
                   {gShort>0 && <span style={{fontSize:12, fontWeight:800, color:"#e65100"}}>⚠ {gShort}</span>}
-                  <span style={{fontWeight:900, fontSize:15, color:full?"#2e7d32":PICKING_COLOR}}>{full?"✓ ":""}{gDone}/{g.items.length}</span>
+                  <span style={{fontWeight:900, fontSize:15, color:showDone?"#2e7d32":PICKING_COLOR}}>{showDone ? `✓ ${g.items.length}` : `${g.items.length} à faire`}</span>
+                  <span style={{fontSize:11, color:"#999"}}>{gDone}/{all.length}</span>
                   <span style={{fontSize:16, color:"#888"}}>{isOpen?"▾":"▸"}</span>
                 </div>
               </div>
