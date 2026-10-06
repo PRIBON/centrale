@@ -354,6 +354,8 @@ const CONSOLE_URL = "https://pribon.github.io/admin/chargement.html";
 const RECEPTION_URL = "https://pribon.github.io/admin/reception.html";
 // Apps Script CENTRAL (Réception) qui détient le Sheet des codes salariés + verify-code.
 // C'est le même déploiement que la console (chargement.html).
+// URL du script autonome « Enlèvement Rungis » (laisser "" = utilise CODE_VERIFY_URL)
+const ENLEVEMENT_URL = "https://script.google.com/macros/s/AKfycbypY1ue7nBesHFhObOan7KOZjGMB3nX5u9N7K-nNSMC2yKAWYfUc1dWRhpgtMmrRz4X/exec";
 const CODE_VERIFY_URL = "https://script.google.com/macros/s/AKfycbzSMWziEuPvxY6UvM6FimJlFCTE1v9u1mWh3gJXbOtMVlHcb478_gASeIwZ1PMEw7-2Sw/exec";
 // Durée de validité d'une connexion par code (au-delà : reconnexion obligatoire).
 const CODE_SESSION_TTL_MS = 60 * 60 * 1000; // 1 h
@@ -1494,7 +1496,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
     const id = "enl_" + Date.now();
     const payload = { action:"request-enlevement", id, by:opBy, date:dateKey, brand:BRAND, lieux:built.map(L=>({ ...L, palettes:L.palettes.map(({sid,...p})=>p) })) };
     try {
-      await fetch(CODE_VERIFY_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) });
+      await fetch((ENLEVEMENT_URL||CODE_VERIFY_URL), { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) });
       if (firebaseReady) {
         const up = {};
         up[`enlevements/${id}`] = { at:Date.now(), by:opBy, date:dateKey, totPal, totDol, lieux:payload.lieux.map(L=>({code:L.code, dolly:L.dolly, pal:L.palettes.reduce((a,p)=>a+p.n,0)})) };
