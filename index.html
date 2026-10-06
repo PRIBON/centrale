@@ -344,7 +344,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.9";
+const APP_VERSION = "v5.11";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -1408,11 +1408,152 @@ function CodeLoginScreen({ moduleLabel, moduleKey, onLogin, onBack }) {
 }
 
 /* =========================================================================
-   ACCUEIL — rejoindre un dispatch + palettes fictives
+   ENLÈVEMENT RUNGIS (v5.11) — remplace les « palettes fictives »
+   Le préparateur coche les palettes (DISPATCH / PICKING) par lieu, indique le nombre,
+   le frais ❄️ et les dollys fromage → mail à Rungis (Apps Script, action "request-enlevement").
    ========================================================================= */
-function HomeScreen({ operator, allSessions, allPicking, adminEmail, onJoinSession, onJoinPicking, onOpenPalette, onBack, onLogout }) {
+const ENLEV_DISPATCH_BG = "#e8f5e9";
+function collectEnlevement(allSessions, allPicking, dateKey, closes) {
+  const lieux = {}; // code -> { code,label, dispatch:{sup:{name,qty}[],lines,total}|null, pickings:[] }
+  const get = (code, label) => (lieux[code] = lieux[code] || { code, label: storeLong(code, label), dispatch:null, pickings:[] });
+  const pd = buildPaletteItems(allSessions, dateKey);
+  Object.entries(pd).forEach(([code, st]) => {
+    const { open } = splitIntoPalettes(st.items, (closes[code]||{}).closes);
+    if (!open.items.length) return;
+    const bySup = {}; const lines = [];
+    open.items.forEach(it => { bySup[it.supplier] = (bySup[it.supplier]||0) + it.qty; lines.push({ s:it.supplier, d:it.designation, q:it.qty }); });
+    get(code, st.label).dispatch = { sup:Object.entries(bySup).map(([name,qty])=>({name,qty})).sort((a,b)=>b.qty-a.qty), lines, total:open.items.reduce((a,i)=>a+i.qty,0) };
+  });
+  Object.entries(allPicking||{}).forEach(([sid, p]) => {
+    if (!p || !p.meta || p.enlevement) return;
+    if (keyOfTs(p.meta.startedAt||0) !== dateKey) return;
+    const stt = p.state || {}; const bySup = {}; const lines = []; let total = 0;
+    (p.meta.products||[]).forEach(x => {
+      const s = stt[x.k]; const q = s && s.done ? (Number(s.picked)||0) : (Number(x.qty)||0);
+      if (q<=0) return; const sn = x.supName||x.supCode||"?";
+      bySup[sn] = (bySup[sn]||0)+q; total += q; lines.push({ s:sn, d:x.designation||"", q });
+    });
+    if (!total) return;
+    get(p.meta.storeCode||"?", p.meta.storeLabel).pickings.push({ sid, orderNum:p.meta.orderNum||"", sup:Object.entries(bySup).map(([name,qty])=>({name,qty})).sort((a,b)=>b.qty-a.qty), lines, total });
+  });
+  return Object.values(lieux).sort((a,b)=>a.label.localeCompare(b.label));
+}
+
+function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const dateKey = todayKey();
   const closes = usePalettesCloses(dateKey);
+  const base = useMemo(() => collectEnlevement(allSessions, allPicking, dateKey, closes), [allSessions, allPicking, dateKey, closes]);
+  // sel["D:CODE"] / sel["P:sid"] = { on, n, frais } ; dolly[CODE] = nombre
+  const [sel, setSel] = useState({});
+  const [dolly, setDolly] = useState({});
+  const [extra, setExtra] = useState([]);
+  const [sending, setSending] = useState(false);
+  const opBy = (operator && (operator.name || ("Code "+operator.code))) || "";
+  const g = (k) => sel[k] || { on:false, n:1, frais:false };
+  const upd = (k, patch) => setSel(s => ({ ...s, [k]: { ...(s[k]||{on:false,n:1,frais:false}), ...patch } }));
+  const lieux = useMemo(() => {
+    const L = [...base];
+    extra.forEach(c => { if (!L.find(x=>x.code===c)) L.push({ code:c, label:storeLong(c), dispatch:null, pickings:[] }); });
+    return L;
+  }, [base, extra]);
+  const stepper = (val, set, min) => (
+    <span style={{display:"inline-flex", alignItems:"center", gap:6}}>
+      <button type="button" onClick={e=>{e.stopPropagation(); set(Math.max(min, val-1));}} style={{width:38,height:38,borderRadius:10,border:"2px solid #999",background:"#fff",fontSize:22,fontWeight:900}}>−</button>
+      <b style={{minWidth:26, textAlign:"center", fontSize:20}}>{val}</b>
+      <button type="button" onClick={e=>{e.stopPropagation(); set(val+1);}} style={{width:38,height:38,borderRadius:10,border:"2px solid #999",background:"#fff",fontSize:22,fontWeight:900}}>+</button>
+    </span>
+  );
+  const row = (k, kind, title, sups) => {
+    const s = g(k); const col = kind==="D" ? DISPATCH_COLOR : PICKING_COLOR; const bg = kind==="D" ? ENLEV_DISPATCH_BG : PICKING_BG;
+    return (
+      <div key={k} style={{border:"2.5px solid "+(s.on?col:"#ddd"), background:s.on?bg:"#fafafa", borderRadius:12, padding:10, marginTop:8, borderLeft:"8px solid "+col}}>
+        <div style={{display:"flex", alignItems:"center", gap:10, justifyContent:"space-between", flexWrap:"wrap"}} onClick={()=>upd(k,{on:!s.on})}>
+          <div style={{fontWeight:900, color:col, fontSize:15}}>{s.on?"☑":"☐"} {kind==="D"?"🚚 DISPATCH":"🛒 PICKING"} <span style={{color:"#333", fontWeight:700}}>{title}</span></div>
+          {s.on && <span style={{display:"inline-flex", alignItems:"center", gap:8}}>
+            {stepper(s.n, v=>upd(k,{n:v}), 1)}<span style={{fontSize:12, fontWeight:800, color:col}}>pal.</span>
+            <button type="button" onClick={e=>{e.stopPropagation(); upd(k,{frais:!s.frais});}} style={{padding:"8px 10px", borderRadius:10, fontWeight:900, fontSize:14, border:"2px solid "+(s.frais?"#0277bd":"#bbb"), background:s.frais?"#0277bd":"#fff", color:s.frais?"#fff":"#888"}}>❄️ Frais</button>
+          </span>}
+        </div>
+        <div style={{fontSize:12, color:"#444", marginTop:6}}>{sups.map(x=>`${x.name} (${x.qty})`).join(" · ") || "—"}</div>
+      </div>
+    );
+  };
+  const built = lieux.map(L => {
+    const palettes = [];
+    if (L.dispatch && g("D:"+L.code).on) { const s=g("D:"+L.code); palettes.push({ type:"DISPATCH", ref:"", n:s.n, frais:!!s.frais, sup:L.dispatch.sup, lines:L.dispatch.lines }); }
+    L.pickings.forEach(pk => { const s=g("P:"+pk.sid); if (s.on) palettes.push({ type:"PICKING", ref:pk.orderNum, n:s.n, frais:!!s.frais, sup:pk.sup, lines:pk.lines, sid:pk.sid }); });
+    return { code:L.code, label:L.label, dolly:dolly[L.code]||0, palettes };
+  }).filter(L => L.palettes.length || L.dolly>0);
+  const totPal = built.reduce((a,L)=>a+L.palettes.reduce((b,p)=>b+p.n,0),0);
+  const totDol = built.reduce((a,L)=>a+L.dolly,0);
+
+  const send = async () => {
+    if (!built.length) return;
+    if (!confirm(`Envoyer la demande à Rungis ?\n\n${totPal} palette(s) + ${totDol} dolly(s) fromage pour ${built.length} lieu(x).`)) return;
+    setSending(true);
+    const id = "enl_" + Date.now();
+    const payload = { action:"request-enlevement", id, by:opBy, date:dateKey, brand:BRAND, lieux:built.map(L=>({ ...L, palettes:L.palettes.map(({sid,...p})=>p) })) };
+    try {
+      await fetch(CODE_VERIFY_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) });
+      if (firebaseReady) {
+        const up = {};
+        up[`enlevements/${id}`] = { at:Date.now(), by:opBy, date:dateKey, totPal, totDol, lieux:payload.lieux.map(L=>({code:L.code, dolly:L.dolly, pal:L.palettes.reduce((a,p)=>a+p.n,0)})) };
+        built.forEach(L => L.palettes.forEach(p => { if (p.sid) up[`picking/${p.sid}/enlevement`] = { id, at:Date.now() }; }));
+        await db.ref().update(up);
+        built.forEach(L => { if (L.palettes.some(p=>p.type==="DISPATCH")) closePalette(dateKey, L.code, closes[L.code]); });
+      }
+    } catch(e) { alert("Erreur d'envoi : "+e.message); setSending(false); return; }
+    setSending(false);
+    launchCelebration("Rungis est prévenu ! 🚛", `${totPal} palette(s) · ${totDol} dolly(s) fromage · ${built.length} lieu(x)`);
+    onBack();
+  };
+  const freeCodes = Object.keys(STORE_LONG).filter(c => !lieux.find(x=>x.code===c));
+
+  return (
+    <div className="app">
+      <div className="header"><div className="header-row"><div>
+        <h1>🚛 Demander un enlèvement</h1>
+        <div className="sub">Rungis · {fmtDateKey(dateKey)}</div></div></div></div>
+      <div style={{padding:12, paddingBottom:140}}>
+        <div style={{display:"flex", gap:8, marginBottom:8, fontSize:12, fontWeight:800, flexWrap:"wrap"}}>
+          <span style={{padding:"4px 10px", borderRadius:20, background:ENLEV_DISPATCH_BG, color:DISPATCH_COLOR, border:"1.5px solid "+DISPATCH_COLOR}}>🚚 DISPATCH</span>
+          <span style={{padding:"4px 10px", borderRadius:20, background:PICKING_BG, color:PICKING_COLOR, border:"1.5px solid "+PICKING_COLOR}}>🛒 PICKING</span>
+          <span style={{padding:"4px 10px", borderRadius:20, background:"#e1f5fe", color:"#0277bd", border:"1.5px solid #0277bd"}}>❄️ FRAIS</span>
+        </div>
+        {lieux.length===0 && <div className="pal-empty">Rien à enlever pour l'instant (aucun dispatch ni picking du jour).<br/>Vous pouvez ajouter un lieu pour un dolly fromage ci-dessous.</div>}
+        {lieux.map(L => (
+          <div key={L.code} className="recap-card" style={{marginTop:10}}>
+            <h3 style={{margin:0}}>📍 {L.label}</h3>
+            {L.dispatch && row("D:"+L.code, "D", `${L.dispatch.total} unités`, L.dispatch.sup)}
+            {L.pickings.map(pk => row("P:"+pk.sid, "P", `${pk.orderNum?("cde "+pk.orderNum+" · "):""}${pk.total} unités`, pk.sup))}
+            <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:10, padding:"8px 10px", background:"#f1f8e9", border:"2px dashed #689f38", borderRadius:12}}>
+              <div style={{fontWeight:900, color:"#33691e"}}>🧀 Dolly fromage <span style={{fontWeight:500, fontSize:11}}>(cagettes vertes)</span></div>
+              {stepper(dolly[L.code]||0, v=>setDolly(d=>({...d,[L.code]:v})), 0)}
+            </div>
+          </div>
+        ))}
+        {freeCodes.length>0 && (
+          <select className="input" style={{marginTop:12, width:"100%", padding:12, fontSize:14}} value="" onChange={e=>{ if(e.target.value) setExtra(x=>[...x, e.target.value]); }}>
+            <option value="">➕ Ajouter un lieu (dolly fromage seul)…</option>
+            {freeCodes.map(c => <option key={c} value={c}>{STORE_LONG[c]}</option>)}
+          </select>
+        )}
+      </div>
+      <div style={{position:"fixed", left:0, right:0, bottom:0, background:"#fff", borderTop:"2px solid #ddd", padding:"10px 14px", zIndex:50}}>
+        <button className="btn-primary" disabled={!built.length||sending} onClick={send} style={{width:"100%", fontSize:18, fontWeight:900, padding:16, opacity:built.length?1:.45}}>
+          {sending?"Envoi…":`🚛 Envoyer à Rungis — ${totPal} pal. · ${totDol} dolly`}
+        </button>
+        <button className="btn-secondary" onClick={onBack} style={{marginTop:6, fontSize:13}}>← Retour</button>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   ACCUEIL — rejoindre un dispatch + palettes fictives
+   ========================================================================= */
+function HomeScreen({ operator, allSessions, allPicking, adminEmail, onJoinSession, onJoinPicking, onOpenEnlevement, onBack, onLogout }) {
+  const dateKey = todayKey();
 
   const activeSessions = useMemo(() => {
     const recent = [];
@@ -1438,8 +1579,6 @@ function HomeScreen({ operator, allSessions, allPicking, adminEmail, onJoinSessi
     out.sort((a,b)=>b.startedAt-a.startedAt);
     return out;
   }, [allPicking]);
-  const paletteData = useMemo(() => buildPaletteItems(allSessions, dateKey), [allSessions, dateKey]);
-  const storeCodes = Object.keys(paletteData).sort();
 
   return (
     <div className="app">
@@ -1492,43 +1631,11 @@ function HomeScreen({ operator, allSessions, allPicking, adminEmail, onJoinSessi
           ))}
         </div>
 
-        {/* Palettes fictives */}
-        <div className="pal-section">
-          <h2>📦 Palettes fictives — {fmtDateKey(dateKey)}</h2>
-          {storeCodes.length===0 && (
-            <div className="pal-empty">Aucun produit dispatché aujourd'hui pour l'instant.<br/>Les palettes se remplissent au fur et à mesure du dispatch.</div>
-          )}
-          {storeCodes.map(code => {
-            const store = paletteData[code];
-            const { palettes, open } = splitIntoPalettes(store.items, (closes[code]||{}).closes);
-            const agg = aggregatePalette(open.items);
-            const suppliers = Object.entries(agg.bySupplier).sort((a,b)=>b[1].qty-a[1].qty);
-            return (
-              <div key={code} className="pal-card" onClick={()=>onOpenPalette(code)}>
-                <div className="pc-top">
-                  <div className="pc-store">{storeLong(code, store.label)}
-                    {palettes.length>0 && <span className="pal-sent-chip">{palettes.length} envoyée{palettes.length>1?"s":""}</span>}
-                  </div>
-                  <div className="pc-num">Palette {open.n}</div>
-                </div>
-                {suppliers.length===0 && <div style={{fontSize:12, color:"#aaa"}}>Palette en cours, vide pour l'instant.</div>}
-                {suppliers.map(([sup, v]) => (
-                  <div className="pc-sup" key={sup}>
-                    <span className="n">{sup}</span>
-                    <span className="q">{v.qty} art. · {v.colis} colis{v.hors>0?` + ${v.hors}`:""}</span>
-                  </div>
-                ))}
-                {suppliers.length>0 && (
-                  <div className="pc-foot">
-                    <span className="pc-colis">📦 <b>{agg.totalColis}</b> colis</span>
-                    <span className="pc-hors">🧺 <b>{agg.totalHors}</b> hors colis</span>
-                    <span style={{color:"#1a4d2e"}}>Σ <b>{agg.totalArticles}</b> art.</span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        {/* Enlèvement Rungis */}
+        <button onClick={onOpenEnlevement} style={{width:"100%", marginTop:14, padding:"22px 14px", borderRadius:18, border:"none", background:"linear-gradient(135deg,#e65100,#ff9800)", color:"#fff", fontSize:21, fontWeight:900, boxShadow:"0 6px 18px rgba(230,81,0,.4)"}}>
+          🚛 Demander un enlèvement à Rungis
+          <div style={{fontSize:12, fontWeight:600, marginTop:4, opacity:.95}}>Palettes dispatch + picking + dolly fromage</div>
+        </button>
       </div>
 
       <div style={{padding:"0 16px 40px", maxWidth:420, margin:"0 auto"}}>
@@ -4999,10 +5106,11 @@ function App() {
     if (!operator) return <CodeLoginScreen moduleLabel="Dispatch & Picking" moduleKey="dispatch" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
     if (dView==="picking" && pickingId) return <PickingScreen pickingId={pickingId} pick={allPicking[pickingId]} operator={opObj} onLeave={()=>{ setPickingId(""); setDView("home"); }} />;
     if (dView==="naming" && namingData) return <NamingScreen supplier={namingData.supplier} products={namingData.products} storeColumns={namingData.storeColumns} onConfirm={handleNamingConfirm} onCancel={()=>{ setNamingData(null); setDView("home"); }} />;
+    if (dView==="enlevement") return <EnlevementScreen operator={opObj} allSessions={allSessions} allPicking={allPicking} onBack={()=>setDView("home")} />;
     if (dView==="palette" && paletteStore) return <PaletteDetailScreen storeCode={paletteStore} allSessions={allSessions} adminEmail={true} onClose={()=>{ setPaletteStore(null); setDView("home"); }} />;
     if (dView==="recap" && recapData) return <RecapScreen sessionId={sessionId} operator={opName} supplier={supplier} products={recapData.products} storeColumns={storeColumns} state={recapData.state} onClose={()=>setDView("dispatch")} onLeave={handleLeaveSession} />;
     if (dView==="dispatch" && sessionId && products.length>0) return <DispatchScreen sessionId={sessionId} operator={opName} supplier={supplier} products={products} storeColumns={storeColumns} onFinish={handleFinish} onLeave={handleLeaveSession} />;
-    return <HomeScreen operator={opName} allSessions={allSessions} allPicking={allPicking} adminEmail={false} onJoinSession={handleJoinSession} onJoinPicking={(id)=>{ setPickingId(id); setDView("picking"); }} onOpenPalette={(code)=>{ setPaletteStore(code); setDView("palette"); }} onBack={()=>setModule(null)} onLogout={logout} />;
+    return <HomeScreen operator={opName} allSessions={allSessions} allPicking={allPicking} adminEmail={false} onJoinSession={handleJoinSession} onJoinPicking={(id)=>{ setPickingId(id); setDView("picking"); }} onOpenEnlevement={()=>setDView("enlevement")} onBack={()=>setModule(null)} onLogout={logout} />;
   }
 
   // ===== INVENTAIRE VIN =====
