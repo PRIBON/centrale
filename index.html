@@ -344,7 +344,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.14";
+const APP_VERSION = "v5.15";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -709,7 +709,7 @@ async function verifyCentraleCode(code, moduleKey) {
   }
 }
 // Nom affichable d'un opérateur à partir de son code + nom résolu.
-const operatorDisplay = (code, name) => (name && name.trim()) ? name.trim() : ("Code " + code);
+const operatorDisplay = (code, name) => (name && name.trim()) ? name.trim() : "Opérateur";
 
 // Bannière de messages envoyés par la console (nœud "broadcasts" du projet CENTRALE).
 // Rendu hors-React (injection DOM) pour être visible sur tous les écrans.
@@ -1384,7 +1384,7 @@ function CodeLoginScreen({ moduleLabel, moduleKey, onLogin, onBack }) {
     const res = await verifyCentraleCode(c, moduleKey);
     setBusy(false);
     if (!res.valid) { setError(res.reason==="module" ? "Ton code n'a pas accès à ce module." : "Code non reconnu. Vérifie auprès du gérant."); return; }
-    const name = res.name || "";
+    const name = res.name || (await resolveOperatorName(c)) || "";
     localStorage.setItem("centrale_op_code", c);
     localStorage.setItem("centrale_op_at", String(Date.now()));
     if (name) localStorage.setItem("centrale_op_name", name);
@@ -1480,96 +1480,171 @@ function compressPhoto(file, maxSide, q) {
     fr.readAsDataURL(file);
   });
 }
-function useEnlevementsEnCours() {
+// ---- v5.15 — identité opérateur : on n'affiche JAMAIS le code (confidentiel), uniquement Prénom Nom du registre ----
+const safeName = (s) => (!s || /^code\s*\d+/i.test(String(s).trim())) ? "Opérateur" : String(s);
+async function ownerKeyOf(code) {
+  try { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("pdp-enl|"+String(code||"")));
+    return Array.from(new Uint8Array(b)).slice(0,12).map(x=>x.toString(16).padStart(2,"0")).join(""); } catch(e) { return ""; }
+}
+function useOwnerKey(me) {
+  const [k, setK] = useState("");
+  const code = me && me.code;
+  useEffect(() => { let alive = true; if (code) ownerKeyOf(code).then(v => { if (alive) setK(v); }); return () => { alive = false; }; }, [code]);
+  return k;
+}
+// Prénom + Nom depuis le REGISTRE (lu côté serveur, le code ne sort jamais du serveur).
+async function resolveOperatorName(code) {
+  try {
+    const r = await fetch(ENLEVEMENT_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"resolve-name", code:String(code||"") }) });
+    const j = await r.json(); return (j && j.ok && j.name) ? String(j.name).trim() : "";
+  } catch(e) { return ""; }
+}
+// Nettoyage : les versions 5.11–5.14 ont stocké le code dans Firebase → on le remplace par une clé chiffrée + le nom.
+let __enlMig = false;
+async function migrateEnlevementCodes(o, allPicking) {
+  if (__enlMig || !firebaseReady) return;
+  const isCode = (s) => /^code\s*\d+/i.test(String(s||"").trim());
+  const todo = Object.entries(o||{}).filter(([id,x]) => x && (x.byCode || isCode(x.by)));
+  const pk = Object.entries(allPicking||{}).filter(([sid,p]) => p && p.enlevement && (p.enlevement.byCode || isCode(p.enlevement.by)));
+  if (!todo.length && !pk.length) return;
+  __enlMig = true;
+  try {
+    const up = {}; const names = {};
+    const nameOf = async (c) => { if (!c) return ""; if (names[c] === undefined) names[c] = await resolveOperatorName(c); return names[c]; };
+    for (const [id,x] of todo) { const c = String(x.byCode || (String(x.by||"").match(/\d+/)||[""])[0]);
+      up[`enlevements/${id}/byCode`] = null; if (c) up[`enlevements/${id}/byKey`] = await ownerKeyOf(c);
+      if (isCode(x.by)) up[`enlevements/${id}/by`] = (await nameOf(c)) || "Opérateur"; }
+    for (const [sid,p] of pk) { const e = p.enlevement; const c = String(e.byCode || (String(e.by||"").match(/\d+/)||[""])[0]);
+      up[`picking/${sid}/enlevement/byCode`] = null; if (c) up[`picking/${sid}/enlevement/byKey`] = await ownerKeyOf(c);
+      if (isCode(e.by)) up[`picking/${sid}/enlevement/by`] = (await nameOf(c)) || "Opérateur"; }
+    await db.ref().update(up);
+  } catch(e) {}
+  __enlMig = false;
+}
+function useEnlevementsEnCours(allPicking) {
   const [v, setV] = useState([]);
   useEffect(() => {
     if (!firebaseReady) return;
     const ref = db.ref("enlevements").orderByChild("at").startAt(Date.now() - 10*86400000);
-    const h = (snap) => { const o = snap.val()||{};
+    const h = (snap) => { const o = snap.val()||{}; migrateEnlevementCodes(o, allPicking);
       setV(Object.entries(o).map(([id,x])=>({id,...x})).filter(x => x && x.status!=="valide" && x.status!=="annule").sort((a,b)=>(b.at||0)-(a.at||0))); };
     ref.on("value", h); return () => ref.off("value", h);
   }, []);
   return v;
 }
-async function annulerDemandeEnlevement(r, me) {
-  const by = (me && (me.name || ("Code "+me.code))) || "";
-  if (!confirm(`Annuler TA demande d'enlèvement de ${fmtTime(r.at)} ?\n\nLes palettes reviennent « en attente d'enlèvement » et pourront être redemandées.`)) return;
+const enlItems = (r) => Array.isArray(r.items) ? r.items : (r.items && typeof r.items==="object" ? Object.values(r.items) : null);
+const isLegacyEnl = (r) => !enlItems(r);
+const isMineEnl = (r, myKey) => !!myKey && r.byKey === myKey;
+
+// Décocher UNE ligne de SA demande (avant le mail de 23h59) → elle repasse « en attente d'enlèvement ».
+async function retirerItemEnlevement(r, idx) {
+  const items = enlItems(r)||[]; const it = items[idx]; if (!it) return;
+  if (!confirm(`Décocher « ${it.type==="DISPATCH"?"Dispatch du jour":"Picking cde "+(it.ref||"—")} » (${it.code}) de ta demande ?\n\nIl repasse « en attente d'enlèvement ».`)) return;
+  const items2 = items.filter((_,i)=>i!==idx);
+  const lieux2 = (r.lieux||[]).map(L=>({ ...L, pal:items2.filter(x=>x.code===L.code).reduce((a,x)=>a+(x.n||0),0), dollies:items2.filter(x=>x.code===L.code).reduce((a,x)=>a+(x.dollies||0),0) })).filter(L=>L.pal>0||L.dolly>0||L.dollies>0||items2.some(x=>x.code===L.code));
+  const base = `enlevements/${r.id}`; const up = {};
+  up[base+"/items"] = items2; up[base+"/lieux"] = lieux2;
+  up[base+"/totPal"] = items2.reduce((a,x)=>a+(x.n||0),0); up[base+"/totDol"] = lieux2.reduce((a,L)=>a+(L.dolly||0)+(L.dollies||0),0);
+  if (!items2.length && !up[base+"/totDol"]) { up[base+"/status"] = "annule"; up[base+"/cancelAt"] = Date.now(); }
+  if (it.sid) up[`picking/${it.sid}/enlevement`] = null;
   try {
-    await fetch((ENLEVEMENT_URL||CODE_VERIFY_URL), { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"cancel-enlevement", id:r.id, by }) });
-    const up = {}; up[`enlevements/${r.id}/status`] = "annule"; up[`enlevements/${r.id}/cancelBy`] = by; up[`enlevements/${r.id}/cancelAt`] = Date.now();
-    (r.items||[]).forEach(it => { if (it.sid) up[`picking/${it.sid}/enlevement`] = null; });
-    await db.ref().update(up);
-    // Dispatch : on retire EXACTEMENT les bornes de palette posées par cette demande.
-    for (const [code, ts] of Object.entries(r.dispClose||{})) {
-      const ref = db.ref(`palettes/${r.date}/${code}/closes`); const snap = await ref.once("value");
-      await ref.set((snap.val()||[]).filter(x => x !== ts));
+    if (it.type==="DISPATCH" && !items2.some(x=>x.type==="DISPATCH" && x.origin===it.origin) && r.dispClose && r.dispClose[it.origin]!=null) {
+      const ts = r.dispClose[it.origin]; const snap = await db.ref(`palettes/${r.date}/${it.origin}/closes`).once("value");
+      up[`palettes/${r.date}/${it.origin}/closes`] = (snap.val()||[]).filter(x=>x!==ts); up[base+"/dispClose/"+it.origin] = null;
     }
+    await db.ref().update(up);
   } catch(e) { alert("Erreur : "+e.message); }
 }
-function DemandesEnCours({ me, title }) {
-  const list = useEnlevementsEnCours();
-  if (!list.length) return null;
-  const myCode = String((me && me.code) || "");
+// Ancienne demande (avant v5.14, sans détail) restée bloquée : on la libère.
+async function libererAncienneDemande(r, allPicking) {
+  if (!confirm("Libérer cette ANCIENNE demande (version précédente de l'app) ?\n\nLes pickings bloqués redeviennent disponibles.")) return;
+  const up = {}; up[`enlevements/${r.id}/status`] = "annule"; up[`enlevements/${r.id}/cancelAt`] = Date.now();
+  Object.entries(allPicking||{}).forEach(([sid,p]) => { if (p && p.enlevement && p.enlevement.id===r.id) up[`picking/${sid}/enlevement`] = null; });
+  try { await db.ref().update(up); } catch(e) { alert("Erreur : "+e.message); }
+}
+
+// Ligne DÉJÀ DEMANDÉE : surlignée fluo, cochée, au nom du demandeur ; seul lui peut décocher.
+function LockedEnlRow({ r, it, idx, myKey }) {
+  const mine = isMineEnl(r, myKey); const sent = r.status==="envoye";
+  const col = it.type==="PICKING" ? PICKING_COLOR : DISPATCH_COLOR;
   return (
-    <div style={{marginTop:12}}>
-      <div style={{fontWeight:900, fontSize:16, color:"#000", background:FLUO, display:"inline-block", padding:"3px 10px", borderRadius:6, border:"2px solid #000"}}>{title || "🔒 Demandé à Rungis — ne pas toucher"}</div>
-      {list.map(r => {
-        const mine = myCode && String(r.byCode||"") === myCode;
-        const canCancel = mine && (r.status||"attente-23h59")==="attente-23h59";
-        const items = r.items || [];
-        const byLieu = {}; items.forEach(it => { (byLieu[it.code] = byLieu[it.code] || []).push(it); });
-        const lieuxCodes = items.length ? Object.keys(byLieu) : (r.lieux||[]).map(l=>l.code);
-        return (
-          <div key={r.id} style={{marginTop:8, background:FLUO, border:"3px solid #000", borderRadius:14, padding:"10px 12px", boxShadow:"0 0 0 4px "+FLUO+"88"}}>
-            <div style={{display:"flex", justifyContent:"space-between", gap:8, flexWrap:"wrap", alignItems:"center"}}>
-              <div style={{fontWeight:900, fontSize:15, color:"#000"}}>🖐️ Demandé par <span style={{background:"#000", color:FLUO, padding:"1px 8px", borderRadius:6}}>{r.by||"?"}</span> · {fmtTime(r.at)}{r.date && r.date!==todayKey()?` (${fmtDateKey(r.date)})`:""}</div>
-              <div style={{fontWeight:900, fontSize:13, color:r.status==="envoye"?"#1b5e20":"#b71c1c"}}>{r.status==="envoye"?"📨 Mail envoyé — attente validation Rungis":"⏳ Part à Rungis à 23h59"}</div>
-            </div>
-            <div style={{fontSize:13, fontWeight:800, color:"#000", margin:"4px 0 6px"}}>{r.totPal||0} palette(s){r.totDol?` + ${r.totDol} dolly`:""} · 🔒 {mine?"ta demande":"verrouillé — seul "+(r.by||"le demandeur")+" peut annuler"}</div>
-            {lieuxCodes.map(code => { const c = siteColor(code); const its = byLieu[code] || [];
-              const sum = (r.lieux||[]).find(l=>l.code===code) || {};
-              return (
-                <div key={code} style={{background:"#fff", border:"3px solid "+c, borderLeft:"10px solid "+c, borderRadius:10, padding:"6px 8px", marginTop:6}}>
-                  <div style={{display:"flex", justifyContent:"space-between", gap:6}}>
-                    <span style={{background:c, color:"#fff", fontWeight:900, borderRadius:6, padding:"2px 8px", fontSize:13}}>📍 {code} · {storeLong(code)}</span>
-                    <b style={{color:c}}>{sum.pal!=null?sum.pal:its.reduce((a,i)=>a+(i.n||0),0)} pal.{sum.dolly?` + ${sum.dolly} 🧀`:""}</b>
-                  </div>
-                  {its.map((it,i) => (
-                    <div key={i} style={{fontSize:13, marginTop:4, color:"#111"}}>
-                      <b style={{color:it.type==="PICKING"?PICKING_COLOR:DISPATCH_COLOR}}>{it.type==="PICKING"?"🛒 Picking cde "+(it.ref||"—"):"🚚 Dispatch"}</b> — {it.n>0?<b>{it.n} pal.</b>:<b style={{color:"#8d6e00"}}>🔗 même palette que {it.mergedWith}</b>}{it.frais?" ❄️":""}
-                      <div style={{fontWeight:800}}>{(it.sups||[]).map(s=>s.name).join(" · ")}</div>
-                    </div>))}
-                </div>); })}
-            {canCancel && <button onClick={()=>annulerDemandeEnlevement(r, me)} style={{marginTop:8, width:"100%", padding:10, borderRadius:10, background:"#fff", border:"2px solid #b71c1c", color:"#b71c1c", fontWeight:900}}>↩︎ Annuler ma demande</button>}
-          </div>);
-      })}
+    <div style={{marginTop:10, background:FLUO, border:"3px solid #000", borderLeft:"10px solid "+col, borderRadius:14, padding:"10px 12px"}}>
+      <div style={{display:"flex", alignItems:"center", gap:10}}>
+        <span style={{fontSize:26, lineHeight:1}}>☑</span>
+        <div style={{flex:1, minWidth:0}}>
+          <div style={{fontWeight:900, fontSize:16, color:col}}>{it.type==="DISPATCH" ? "🚚 DISPATCH · Dispatch du jour" : "🛒 PICKING · Commande "+(it.ref||"—")}
+            <span style={{color:"#000"}}> · {enlItemQty(it)}{it.frais?" · ❄️":""}{it.hasPhoto?" · 📷":""}</span></div>
+          <div style={{fontWeight:900, fontSize:13, color:"#000", marginTop:2}}>🔒 Demandé par <span style={{background:"#000", color:FLUO, padding:"1px 8px", borderRadius:6}}>{safeName(r.by)}</span> · {fmtTime(r.at)}{r.date && r.date!==todayKey() ? ` (${fmtDateKey(r.date)})` : ""} · {sent ? "📨 envoyé à Rungis" : "⏳ part à 23h59"}</div>
+        </div>
+      </div>
+      <SupList sups={it.sups} color="#000" max={8} />
+      {mine && !sent
+        ? <button onClick={()=>retirerItemEnlevement(r, idx)} style={{marginTop:8, width:"100%", padding:10, borderRadius:10, background:"#fff", border:"2px solid #b71c1c", color:"#b71c1c", fontWeight:900, fontSize:14}}>☐ Décocher — retirer de ma demande</button>
+        : <div style={{marginTop:6, fontSize:12, fontWeight:800, color:"#000"}}>{sent ? "📨 Déjà envoyé à Rungis — plus modifiable." : `🔒 Seul ${safeName(r.by)} peut décocher.`}</div>}
     </div>
   );
 }
 
+// Accueil : récap des demandes faites, REPLIÉ par défaut (en bas).
+function DemandesEnCours({ me, allPicking }) {
+  const list = useEnlevementsEnCours(allPicking);
+  if (!list.length) return null;
+  const nPal = list.reduce((a,r)=>a+(r.totPal||0),0);
+  return (
+    <details style={{marginTop:14, border:"3px solid #000", borderRadius:12, background:FLUO, padding:"8px 10px"}}>
+      <summary style={{fontWeight:900, fontSize:15, cursor:"pointer", color:"#000"}}>🔒 Déjà demandé à Rungis — {list.length} demande(s) · {nPal} pal. <span style={{fontSize:12, fontWeight:700}}>(toucher pour voir)</span></summary>
+      {list.map(r => isLegacyEnl(r) ? (
+        <div key={r.id} style={{marginTop:8, background:"#fff", border:"2px dashed #000", borderRadius:10, padding:"6px 8px", fontSize:13}}>
+          🧹 Ancienne demande du {fmtDateKey(r.date||"")} {fmtTime(r.at)} ({r.totPal||0} pal.) — version précédente, bloquée.
+          <button onClick={()=>libererAncienneDemande(r, allPicking)} style={{marginLeft:8, padding:"4px 10px", borderRadius:8, border:"2px solid #b71c1c", color:"#b71c1c", background:"#fff", fontWeight:900}}>Libérer</button>
+        </div>
+      ) : (
+        <div key={r.id} style={{marginTop:8, background:"#fff", border:"2px solid #000", borderRadius:10, padding:"6px 8px"}}>
+          <div style={{fontWeight:900, fontSize:13}}>🖐️ {safeName(r.by)} · {fmtTime(r.at)}{r.date && r.date!==todayKey() ? ` (${fmtDateKey(r.date)})` : ""} · {r.status==="envoye" ? "📨 envoyé à Rungis" : "⏳ part à 23h59"}</div>
+          <div style={{display:"flex", gap:6, flexWrap:"wrap", marginTop:4}}>{(r.lieux||[]).map(L => <span key={L.code} style={{background:siteColor(L.code), color:"#fff", borderRadius:6, padding:"2px 8px", fontWeight:900, fontSize:12}}>{L.code} : {L.pal} pal.{L.dollies?` + ${L.dollies} dolly`:""}{L.dolly?` + ${L.dolly}🧀`:""}</span>)}</div>
+          {(enlItems(r)||[]).map((it,i) => <div key={i} style={{fontSize:12, marginTop:3}}><b>{it.type==="DISPATCH" ? "🚚 Dispatch" : "🛒 Picking cde "+(it.ref||"—")}</b> → {it.code} · {enlItemQty(it)} — <b>{(it.sups||[]).map(s=>s.name).join(" · ")}</b></div>)}
+        </div>
+      ))}
+      <div style={{fontSize:11, marginTop:6, color:"#000"}}>Pour décocher une ligne : écran « Demander un enlèvement » (seul le demandeur peut le faire).</div>
+    </details>
+  );
+}
+
+
+// Quantité lisible d'une ligne d'enlèvement (palettes / dollys / via Kelbongoo / fusion).
+function enlItemQty(it) {
+  if (it.kbg) return "📦 envoyé via Kelbongoo (pas à enlever)";
+  if (it.dollies > 0) return "🛞 " + it.dollies + " dolly(s)";
+  if (it.n > 0) return "🟫 " + it.n + " pal.";
+  return "🔗 même palette que " + (it.mergedWith || "");
+}
+
+// v5.15 — Écran d'enlèvement en 2 onglets : 🚚 DISPATCH (1 personne) / 🛒 PICKING (1 personne).
 function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const dateKey = todayKey();
   const closes = usePalettesCloses(dateKey);
   const base = useMemo(() => collectEnlevement(allSessions, allPicking, dateKey, closes), [allSessions, allPicking, dateKey, closes]);
-  // sel[clé] = { on, n, frais, merge } ; merge = clé de la palette sur laquelle ce picking est FUSIONNÉ (rare)
+  const [mode, setMode] = useState(() => { try { return localStorage.getItem("enl_mode")==="P" ? "P" : "D"; } catch(e) { return "D"; } });
+  const setModeKeep = (m) => { setMode(m); try { localStorage.setItem("enl_mode", m); } catch(e){} };
+  // sel[clé] = { on, n, frais, merge, cond } ; cond (dispatch) = "pal" | "dolly" | "kbg"
   const [sel, setSel] = useState({});
-  const [dolly, setDolly] = useState({});
+  const [dolly, setDolly] = useState({});      // dolly FROMAGE par lieu (onglet dispatch)
   const [extra, setExtra] = useState([]);
   const [moves, setMoves] = useState({});
-  const [photos, setPhotos] = useState({});   // v5.14 : photo de l'emplacement de chaque palette (pour Rungis)
+  const [photos, setPhotos] = useState({});    // photo par ligne (picking, facultatif)
+  const [genPhoto, setGenPhoto] = useState(""); // photo GÉNÉRALE du dispatch
   const [sending, setSending] = useState(false);
-  const [todayReqs, setTodayReqs] = useState([]);
-  const opBy = (operator && (operator.name || ("Code "+operator.code))) || "";
-  useEffect(() => {
-    if (!firebaseReady) return;
-    const ref = db.ref("enlevements").orderByChild("date").equalTo(dateKey);
-    const h = (snap) => { const v = snap.val()||{}; setTodayReqs(Object.entries(v).map(([id,x])=>({id,...x})).sort((a,b)=>(b.at||0)-(a.at||0))); };
-    ref.on("value", h); return () => ref.off("value", h);
-  }, [dateKey]);
-  const g = (k) => sel[k] || { on:false, n:1, frais:false, merge:"" };
-  const upd = (k, patch) => setSel(s => ({ ...s, [k]: { ...(s[k]||{on:false,n:1,frais:false,merge:""}), ...patch } }));
+  const opBy = safeName(operator && operator.name);
+  const myKey = useOwnerKey(operator);
+  const reqs = useEnlevementsEnCours(allPicking);
+  const legacyReqs = reqs.filter(isLegacyEnl);
+  const wantType = mode==="D" ? "DISPATCH" : "PICKING";
+  const reqByCode = useMemo(() => { const m = {}; reqs.filter(r=>!isLegacyEnl(r)).forEach(r => (enlItems(r)||[]).forEach((it,i) => { if (it.type!==wantType) return; (m[it.code] = m[it.code] || []).push({ r, it, i }); })); return m; }, [reqs, wantType]);
+  const DEF = { on:false, n:1, frais:false, merge:"", cond:"pal" };
+  const g = (k) => ({ ...DEF, ...(sel[k]||{}) });
+  const upd = (k, patch) => setSel(s => ({ ...s, [k]: { ...DEF, ...(s[k]||{}), ...patch } }));
 
-  const rows = useMemo(() => {
+  const allRows = useMemo(() => {
     const r = [];
     base.forEach(L => {
       if (L.dispatch) r.push({ k:"D:"+L.code, kind:"D", origin:L.code, sups:L.dispatch.sup, lines:L.dispatch.lines, total:L.dispatch.total });
@@ -1577,16 +1652,20 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
     });
     return r;
   }, [base]);
+  const rows = allRows.filter(r => r.kind===mode);
+  const nD = allRows.filter(r=>r.kind==="D").length, nP = allRows.filter(r=>r.kind==="P").length;
   const dest = (row) => moves[row.k] || row.origin;
   const lieux = useMemo(() => {
     const codes = [];
     rows.forEach(r => { const c = dest(r); if (!codes.includes(c)) codes.push(c); });
-    extra.forEach(c => { if (!codes.includes(c)) codes.push(c); });
+    Object.keys(reqByCode).forEach(c => { if (!codes.includes(c)) codes.push(c); });
+    if (mode==="D") extra.forEach(c => { if (!codes.includes(c)) codes.push(c); });
     return codes.map(c => ({ code:c, label:storeLong(c), rows:rows.filter(r=>dest(r)===c) })).sort((a,b)=>a.label.localeCompare(b.label));
-  }, [rows, moves, extra]);
-  // Nombre de palettes RÉEL d'une ligne (0 si fusionnée sur une autre palette cochée du même lieu)
-  const palOf = (r, L) => { const s=g(r.k); if (!s.on) return 0; if (s.merge && L.rows.some(o=>o.k===s.merge && g(o.k).on && !g(o.k).merge)) return 0; return s.n; };
-  const palsOfLieu = (L) => L.rows.reduce((a,r)=>a+palOf(r,L),0);
+  }, [allRows, moves, extra, reqByCode, mode]);
+  // palettes réelles d'une ligne (0 si fusionnée, dolly ou via Kelbongoo)
+  const palOf = (r, L) => { const s=g(r.k); if (!s.on) return 0; if (r.kind==="D" && s.cond!=="pal") return 0;
+    if (s.merge && L.rows.some(o=>o.k===s.merge && g(o.k).on && !g(o.k).merge)) return 0; return s.n; };
+  const dolOf = (r) => { const s=g(r.k); return (s.on && r.kind==="D" && s.cond==="dolly") ? s.n : 0; };
   const label = (r) => r.kind==="D" ? "Dispatch du jour" : `Commande ${r.ref||"—"}`;
 
   const stepper = (val, set, min, col) => (
@@ -1596,28 +1675,26 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
       <button type="button" onClick={e=>{e.stopPropagation(); set(val+1);}} style={{width:44,height:44,borderRadius:12,border:"2px solid "+(col||"#999"),background:col||"#fff",fontSize:26,fontWeight:900,color:"#fff"}}>+</button>
     </span>
   );
-  const photoBtn = (r) => {
-    const ph = photos[r.k]; const id = "ph_"+r.k.replace(/[^\w]/g,"_");
-    return (
-      <span style={{display:"inline-flex", alignItems:"center", gap:8}}>
-        <input id={id} type="file" accept="image/*" capture="environment" style={{display:"none"}}
-          onChange={async e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
-            try { const d = await compressPhoto(f, 1000, 0.7); setPhotos(p => ({ ...p, [r.k]: d })); } catch(err) { alert("Photo : "+err.message); } }} />
-        {ph && <img src={ph} alt="" onClick={()=>document.getElementById(id).click()} style={{width:56, height:56, objectFit:"cover", borderRadius:8, border:"3px solid #2e7d32"}} />}
-        <button type="button" onClick={()=>document.getElementById(id).click()}
-          style={{padding:"10px 12px", borderRadius:10, fontWeight:900, fontSize:14, border:"2px solid "+(ph?"#2e7d32":"#c62828"), background:ph?"#e8f5e9":"#fdecea", color:ph?"#2e7d32":"#c62828"}}>
-          📷 {ph ? "Reprendre" : "Photo emplacement"}</button>
-      </span>);
+  const photoInput = (id, onData) => (
+    <input id={id} type="file" accept="image/*" capture="environment" style={{display:"none"}}
+      onChange={async e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
+        try { onData(await compressPhoto(f, 1000, 0.7)); } catch(err) { alert("Photo : "+err.message); } }} />);
+  const photoBtnRow = (r) => { const ph = photos[r.k]; const id = "ph_"+r.k.replace(/[^\w]/g,"_");
+    return (<span style={{display:"inline-flex", alignItems:"center", gap:8}}>{photoInput(id, d=>setPhotos(p=>({ ...p, [r.k]:d })))}
+      {ph && <img src={ph} alt="" onClick={()=>document.getElementById(id).click()} style={{width:50, height:50, objectFit:"cover", borderRadius:8, border:"3px solid #2e7d32"}} />}
+      <button type="button" onClick={()=>document.getElementById(id).click()} style={{padding:"10px 12px", borderRadius:10, fontWeight:800, fontSize:13, border:"2px solid "+(ph?"#2e7d32":"#999"), background:ph?"#e8f5e9":"#fff", color:ph?"#2e7d32":"#555"}}>📷 {ph?"Reprendre":"Photo (facultatif)"}</button></span>);
   };
+  const condBtn = (r, val, txt, col) => { const s=g(r.k); const on = s.cond===val;
+    return <button type="button" onClick={()=>upd(r.k,{cond:val, n:(val===s.cond?s.n:1)})} style={{flex:1, minWidth:90, padding:"12px 6px", borderRadius:12, fontWeight:900, fontSize:14, border:"3px solid "+col, background:on?col:"#fff", color:on?"#fff":col}}>{txt}</button>; };
+
   const rowView = (r, L, siteCol) => {
     const s = g(r.k); const col = r.kind==="D" ? DISPATCH_COLOR : PICKING_COLOR; const bg = r.kind==="D" ? ENLEV_DISPATCH_BG : PICKING_BG;
     const moved = dest(r) !== r.origin;
-    const mergeTargets = L.rows.filter(o => o.k!==r.k && g(o.k).on && !g(o.k).merge);
-    const merged = s.on && s.merge && mergeTargets.some(o=>o.k===s.merge);
+    const mergeTargets = L.rows.filter(o => o.k!==r.k && g(o.k).on && !g(o.k).merge && o.kind==="P");
+    const merged = r.kind==="P" && s.on && s.merge && mergeTargets.some(o=>o.k===s.merge);
     const tgt = merged ? L.rows.find(o=>o.k===s.merge) : null;
     return (
-      <div key={r.k} style={{border:"3px solid "+(s.on?col:"#ccc"), background:s.on?bg:"#fff", borderRadius:14, marginTop:10, borderLeft:"10px solid "+col, overflow:"hidden", opacity:s.on?1:.85}}>
-        {/* Ligne 1 : case + type + commande */}
+      <div key={r.k} style={{border:"3px solid "+(s.on?col:"#ccc"), background:s.on?bg:"#fff", borderRadius:14, marginTop:10, borderLeft:"10px solid "+col, overflow:"hidden"}}>
         <div onClick={()=>upd(r.k,{on:!s.on})} style={{display:"flex", alignItems:"center", gap:10, padding:"10px 12px", cursor:"pointer", background:s.on?col:"#f3f3f3", color:s.on?"#fff":col}}>
           <span style={{fontSize:26, lineHeight:1}}>{s.on?"☑":"☐"}</span>
           <div style={{flex:1, minWidth:0}}>
@@ -1626,26 +1703,37 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
           </div>
           {!s.on && <span style={{fontSize:12, fontWeight:900}}>Toucher pour ajouter</span>}
         </div>
-        {/* Fournisseurs en GRAS */}
         <div style={{padding:"4px 12px 8px"}}><SupList sups={r.sups} color={col} /></div>
         {s.on && <div style={{padding:"10px 12px", borderTop:"2px dashed "+col+"55", background:"#fff"}}>
-          {/* Nombre de palettes : GROS, toujours visible */}
-          {merged
+          {r.kind==="D" && <>
+            <div style={{fontSize:13, fontWeight:900, color:col, textTransform:"uppercase", marginBottom:6}}>Comment ça part ?</div>
+            <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
+              {condBtn(r, "pal", "🟫 Palette", DISPATCH_COLOR)}{condBtn(r, "dolly", "🛞 Dolly", "#6d4c41")}{condBtn(r, "kbg", "📦 Via Kelbongoo", "#7b1fa2")}
+            </div>
+            {s.cond==="kbg"
+              ? <div style={{marginTop:8, padding:"8px 10px", borderRadius:10, background:"#f3e5f5", color:"#4a148c", fontWeight:800, fontSize:13}}>📦 Part avec la tournée Kelbongoo — <b>pas compté</b> dans l'enlèvement Rungis.</div>
+              : <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, marginTop:10, flexWrap:"wrap"}}>
+                  <div style={{fontSize:13, fontWeight:900, color:col, textTransform:"uppercase"}}>{s.cond==="dolly" ? "Nombre de dollys" : "Nombre de palettes"}</div>
+                  {stepper(s.n, v=>upd(r.k,{n:v}), 1, s.cond==="dolly" ? "#6d4c41" : col)}
+                </div>}
+          </>}
+          {r.kind==="P" && (merged
             ? <div style={{display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:12, background:"#fff8e1", border:"2px solid #f9a825", fontWeight:900, color:"#8d6e00", fontSize:15}}>
                 🔗 Sur la MÊME palette que « {label(tgt)} » <button onClick={()=>upd(r.k,{merge:""})} style={{marginLeft:"auto", padding:"6px 10px", borderRadius:8, background:"#fff", border:"1.5px solid #8d6e00", color:"#8d6e00", fontWeight:800}}>Séparer</button></div>
             : <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap"}}>
                 <div><div style={{fontSize:13, fontWeight:900, color:col, textTransform:"uppercase"}}>Nombre de palettes</div>
                   <div style={{fontSize:11, color:"#777"}}>1 par défaut — + si ça ne tient pas sur une palette</div></div>
                 {stepper(s.n, v=>upd(r.k,{n:v}), 1, col)}
-              </div>}
-          <div style={{display:"flex", gap:8, marginTop:10, flexWrap:"wrap", alignItems:"center"}}>
-            {!merged && photoBtn(r)}<button type="button" onClick={()=>upd(r.k,{frais:!s.frais})} style={{padding:"10px 12px", borderRadius:10, fontWeight:900, fontSize:14, border:"2px solid "+(s.frais?"#0277bd":"#bbb"), background:s.frais?"#0277bd":"#fff", color:s.frais?"#fff":"#666"}}>❄️ {s.frais?"Contient du FRAIS":"Frais ?"}</button>
+              </div>)}
+          {!(r.kind==="D" && s.cond==="kbg") && <div style={{display:"flex", gap:8, marginTop:10, flexWrap:"wrap", alignItems:"center"}}>
+            {r.kind==="P" && !merged && photoBtnRow(r)}
+            <button type="button" onClick={()=>upd(r.k,{frais:!s.frais})} style={{padding:"10px 12px", borderRadius:10, fontWeight:900, fontSize:14, border:"2px solid "+(s.frais?"#0277bd":"#bbb"), background:s.frais?"#0277bd":"#fff", color:s.frais?"#fff":"#666"}}>❄️ {s.frais?"Contient du FRAIS":"Frais ?"}</button>
             {r.kind==="P" && !merged && mergeTargets.length>0 && (
               <select value="" onChange={e=>{ if(e.target.value) upd(r.k,{merge:e.target.value}); }} style={{padding:"9px 8px", borderRadius:10, border:"2px solid #f9a825", fontWeight:800, color:"#8d6e00", background:"#fffdf3"}}>
                 <option value="">🔗 Fusionner sur une autre palette…</option>
-                {mergeTargets.map(o => <option key={o.k} value={o.k}>{o.kind==="D"?"🚚":"🛒"} {label(o)}</option>)}
+                {mergeTargets.map(o => <option key={o.k} value={o.k}>🛒 {label(o)}</option>)}
               </select>)}
-          </div>
+          </div>}
           <div style={{display:"flex", alignItems:"center", gap:8, marginTop:10, flexWrap:"wrap"}}>
             <span style={{fontSize:13, fontWeight:900, color:"#555"}}>📍 Lieu :</span>
             <select value={dest(r)} onChange={e=>{ const v=e.target.value; setMoves(m=>{ const n={...m}; if (v===r.origin) delete n[r.k]; else n[r.k]=v; return n; }); upd(r.k,{merge:""}); }}
@@ -1661,77 +1749,89 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
 
   const built = lieux.map(L => {
     const palettes = [];
-    L.rows.forEach(r => { const s=g(r.k); if (!s.on) return; const n=palOf(r,L);
-      const tgt = n===0 ? L.rows.find(o=>o.k===s.merge) : null;
-      palettes.push({ type:r.kind==="D"?"DISPATCH":"PICKING", ref:r.ref||"", n, frais:!!s.frais, mergedWith:tgt?(tgt.kind==="D"?"dispatch":("cde "+(tgt.ref||""))):"", sup:r.sups, lines:r.lines, total:r.total, origin:r.origin, sid:r.sid, photo:(n>0?(photos[r.k]||""):"") }); });
-    return { code:L.code, label:L.label, color:siteColor(L.code), dolly:dolly[L.code]||0, palettes };
+    L.rows.forEach(r => { const s=g(r.k); if (!s.on) return; const n=palOf(r,L); const dollies=dolOf(r); const kbg = r.kind==="D" && s.cond==="kbg";
+      const tgt = (r.kind==="P" && n===0) ? L.rows.find(o=>o.k===s.merge) : null;
+      palettes.push({ key:r.k, type:r.kind==="D"?"DISPATCH":"PICKING", ref:r.ref||"", n, dollies, kbg, cond:r.kind==="D"?s.cond:"pal", frais:!!s.frais && !kbg,
+        mergedWith:tgt?("cde "+(tgt.ref||"")):"", sup:r.sups, lines:r.lines, total:r.total, origin:r.origin, sid:r.sid,
+        photo:(r.kind==="P" && n>0) ? (photos[r.k]||"") : "" }); });
+    return { code:L.code, label:L.label, color:siteColor(L.code), dolly:(mode==="D" ? (dolly[L.code]||0) : 0), palettes };
   }).filter(L => L.palettes.length || L.dolly>0);
-  const totPal = built.reduce((a,L)=>a+L.palettes.reduce((b,p)=>b+p.n,0),0);
-  const totDol = built.reduce((a,L)=>a+L.dolly,0);
+  const sumL = (L) => ({ pal:L.palettes.reduce((a,p)=>a+p.n,0), dol:L.palettes.reduce((a,p)=>a+(p.dollies||0),0), kbg:L.palettes.filter(p=>p.kbg).length });
+  const totPal = built.reduce((a,L)=>a+sumL(L).pal,0);
+  const totDolD = built.reduce((a,L)=>a+sumL(L).dol,0);
+  const totFro = built.reduce((a,L)=>a+L.dolly,0);
   const clean = (B) => B.map(L=>({ ...L, palettes:L.palettes.map(({sid,...p})=>p) }));
+  const chipTxt = (L) => { const x=sumL(L); return [x.pal?x.pal+" pal.":"", x.dol?x.dol+" dolly":"", L.dolly?L.dolly+" 🧀":"", x.kbg?"📦 KBG":""].filter(Boolean).join(" + ") || "—"; };
 
   const send = async () => {
     if (!built.length) return;
-    const sansPhoto = []; built.forEach(L => L.palettes.forEach(p => { if (p.n>0 && !p.photo) sansPhoto.push(L.code+" · "+(p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref)); }));
-    if (sansPhoto.length && !confirm("📷 PHOTO MANQUANTE — Rungis ne saura pas où trouver :\n\n• "+sansPhoto.join("\n• ")+"\n\nAnnuler = revenir prendre la photo.\nOK = envoyer quand même.")) return;
-    const recap = built.map(L => `📍 ${L.code} : ${L.palettes.reduce((a,p)=>a+p.n,0)} palette(s)${L.dolly?` + ${L.dolly} dolly`:""}\n`+L.palettes.map(p=>`   • ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref} → ${p.n?p.n+" pal.":"fusionné ("+p.mergedWith+")"}${p.frais?" ❄️":""}${p.origin!==L.code?" (déplacé de "+p.origin+")":""}`).join("\n")).join("\n");
-    if (!confirm(`Enregistrer la demande d'enlèvement ?\n\n${recap}\n\nTOTAL : ${totPal} palette(s) + ${totDol} dolly(s)\n📨 Mail automatique à Rungis à 23h59.`)) return;
+    if (mode==="D" && !genPhoto && built.some(L=>L.palettes.some(p=>!p.kbg)) && !confirm("📷 Pas de photo générale du dispatch.\n\nOK = enregistrer quand même · Annuler = prendre la photo")) return;
+    const recap = built.map(L => `📍 ${L.code} : ${chipTxt(L)}\n`+L.palettes.map(p=>`   • ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref} → ${p.kbg?"via Kelbongoo (pas compté)":p.dollies?p.dollies+" dolly(s)":p.n?p.n+" pal.":"fusionné ("+p.mergedWith+")"}${p.frais?" ❄️":""}${p.origin!==L.code?" (déplacé de "+p.origin+")":""}`).join("\n")).join("\n");
+    if (!confirm(`Enregistrer la demande d'enlèvement ${mode==="D"?"DISPATCH":"PICKING"} ?\n\n${recap}\n\nTOTAL : ${totPal} palette(s)${totDolD?` + ${totDolD} dolly(s)`:""}${totFro?` + ${totFro} dolly(s) fromage`:""}\n📨 Mail automatique à Rungis à 23h59.`)) return;
     setSending(true);
     const id = "enl_" + Date.now();
-    const payload = { action:"request-enlevement", id, by:opBy, byCode:(operator&&operator.code)||"", date:dateKey, at:Date.now(), brand:BRAND, lieux:clean(built) };
-    const items = []; built.forEach(L => L.palettes.forEach(p => items.push({ code:L.code, type:p.type, ref:p.ref||"", n:p.n, frais:!!p.frais, mergedWith:p.mergedWith||"", origin:p.origin, sid:p.sid||"", total:p.total||0, sups:(p.sup||[]).map(x=>({name:x.name, qty:x.qty})), hasPhoto:!!p.photo })));
+    const payload = { action:"request-enlevement", id, mode, by:opBy, byKey:myKey, date:dateKey, at:Date.now(), brand:BRAND, photoGeneral:(mode==="D"?genPhoto:""), lieux:clean(built) };
+    const items = []; built.forEach(L => L.palettes.forEach(p => items.push({ key:p.key, code:L.code, type:p.type, ref:p.ref||"", n:p.n, dollies:p.dollies||0, kbg:!!p.kbg, frais:!!p.frais,
+      mergedWith:p.mergedWith||"", origin:p.origin, sid:p.sid||"", total:p.total||0, sups:(p.sup||[]).map(x=>({name:x.name, qty:x.qty})),
+      hasPhoto:!!(p.photo || (p.type==="DISPATCH" && genPhoto)), lines:(p.lines||[]).slice(0,500) })));
     const dispClose = {}; const tsBase = Date.now(); let tsI = 0;
     built.forEach(L => L.palettes.forEach(p => { if (p.type==="DISPATCH" && dispClose[p.origin]==null) dispClose[p.origin] = tsBase + (tsI++); }));
     try {
-      await fetch((ENLEVEMENT_URL||CODE_VERIFY_URL), { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) });
-      if (firebaseReady) {
-        const up = {};
-        up[`enlevements/${id}`] = { at:Date.now(), by:opBy, byCode:(operator&&operator.code)||"", date:dateKey, totPal, totDol, status:"attente-23h59", items, dispClose,
-          lieux:payload.lieux.map(L=>({code:L.code, dolly:L.dolly, pal:L.palettes.reduce((a,p)=>a+p.n,0)})) };
-        built.forEach(L => L.palettes.forEach(p => {
-          if (p.sid) {
-            up[`picking/${p.sid}/enlevement`] = { id, at:Date.now(), by:opBy, byCode:(operator&&operator.code)||"" };
-            if (p.origin !== L.code) { up[`picking/${p.sid}/meta/storeCode`] = L.code; up[`picking/${p.sid}/meta/storeLabel`] = pkStoreLabel(L.code); up[`picking/${p.sid}/meta/storeFixedBy`] = opBy+" · "+new Date().toLocaleString("fr-FR"); }
-          }
-        }));
-        Object.entries(dispClose).forEach(([c, ts]) => { up[`palettes/${dateKey}/${c}/closes`] = [ ...(((closes[c]||{}).closes)||[]), ts ]; });
-        await db.ref().update(up);
-      }
-    } catch(e) { alert("Erreur d'envoi : "+e.message); setSending(false); return; }
-    setSending(false);
-    launchCelebration("Demande enregistrée ! 🚛", `${totPal} palette(s) · ${totDol} dolly(s) · mail à Rungis à 23h59`);
-    onBack();
+      if (!firebaseReady) throw new Error("connexion indisponible — réessaie dans un instant");
+      const up = {};
+      up[`enlevements/${id}`] = { at:Date.now(), by:opBy, byKey:myKey, mode, date:dateKey, totPal, totDol:totDolD+totFro, totDolDispatch:totDolD, totFromage:totFro, status:"attente-23h59", items, dispClose,
+        lieux:built.map(L=>({ code:L.code, dolly:L.dolly, pal:sumL(L).pal, dollies:sumL(L).dol })) };
+      built.forEach(L => L.palettes.forEach(p => {
+        if (p.sid) {
+          up[`picking/${p.sid}/enlevement`] = { id, at:Date.now(), by:opBy, byKey:myKey };
+          if (p.origin !== L.code) { up[`picking/${p.sid}/meta/storeCode`] = L.code; up[`picking/${p.sid}/meta/storeLabel`] = pkStoreLabel(L.code); up[`picking/${p.sid}/meta/storeFixedBy`] = opBy+" · "+new Date().toLocaleString("fr-FR"); }
+        }
+      }));
+      Object.entries(dispClose).forEach(([c, ts]) => { up[`palettes/${dateKey}/${c}/closes`] = [ ...(((closes[c]||{}).closes)||[]), ts ]; });
+      await db.ref().update(up);
+      // Photos + copie serveur en arrière-plan (l'écran ne reste plus bloqué sur « Enregistrement… »).
+      try { fetch((ENLEVEMENT_URL||CODE_VERIFY_URL), { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) }).catch(()=>{}); } catch(_) {}
+    } catch(e) { alert("Erreur d'enregistrement : "+e.message); setSending(false); return; }
+    setSending(false); setSel({}); setDolly({}); setPhotos({}); setGenPhoto(""); setMoves({});
+    launchCelebration("Demande enregistrée ! 🚛", `${totPal} palette(s)${totDolD?` · ${totDolD} dolly`:""}${totFro?` · ${totFro} 🧀`:""} · mail à Rungis à 23h59`);
   };
   const freeCodes = Object.keys(STORE_LONG).filter(c => !lieux.find(x=>x.code===c));
+  const MC = mode==="D" ? DISPATCH_COLOR : PICKING_COLOR;
+  const tab = (m, txt, n) => { const on = mode===m; const c = m==="D" ? DISPATCH_COLOR : PICKING_COLOR;
+    return <button onClick={()=>setModeKeep(m)} style={{flex:1, padding:"14px 6px", fontSize:16, fontWeight:900, border:"3px solid "+c, borderRadius:12, background:on?c:"#fff", color:on?"#fff":c}}>{txt}{n?` (${n})`:""}</button>; };
 
   return (
     <div className="app">
       <div className="header" style={{background:"linear-gradient(135deg,#e65100,#ff9800)"}}><div className="header-row"><div>
         <h1>🚛 Demander un enlèvement</h1>
-        <div className="sub">Rungis · {fmtDateKey(dateKey)} · mail automatique à 23h59</div></div>
+        <div className="sub">Rungis · {fmtDateKey(dateKey)} · mail automatique à 23h59 · {opBy}</div></div>
         <div className="header-actions"><button className="header-btn" onClick={onBack}>← Retour</button></div></div></div>
       <div style={{padding:12, paddingBottom:150}}>
-        <div style={{background:"#fff3e0", border:"2px solid #e65100", borderRadius:12, padding:"10px 12px", fontSize:13, color:"#5d2a00", marginBottom:10}}>
-          ☑ Coche ce qui part, prends la <b>📷 photo de l'emplacement</b>, indique le <b>nombre de palettes</b> (1 par défaut), le ❄️ frais, et corrige le 📍 lieu si besoin. Un picking posé sur la palette d'un autre : <b>🔗 Fusionner</b>.
-          <br/>📨 Toutes les demandes du jour partent en <b>un seul mail à 23h59</b>.
-          {false && <div style={{marginTop:8}}>{todayReqs.map(r=>(
-            <div key={r.id} style={{fontSize:12, padding:"4px 0", borderTop:"1px dashed #ffb74d"}}>✅ {fmtTime(r.at)} · {r.by} · <b>{r.totPal||0} pal.</b> + {r.totDol||0} dolly · {(r.lieux||[]).map(l=>l.code).join(", ")} <span style={{color:r.status==="envoye"?"#2e7d32":"#e65100", fontWeight:800}}>{r.status==="envoye"?"· envoyé":r.status==="valide"?"· validé par Rungis":"· part à 23h59"}</span></div>))}</div>}
-        </div>
-        <DemandesEnCours me={operator} title="🔒 Déjà demandé — verrouillé" />
-        {lieux.length===0 && <div className="pal-empty">Rien à enlever pour l'instant (aucun dispatch du jour ni picking non enlevé).<br/>Vous pouvez ajouter un lieu pour un dolly fromage ci-dessous.</div>}
-        {lieux.map(L => { const c = siteColor(L.code); const np = palsOfLieu(L); return (
+        <div style={{display:"flex", gap:8, marginBottom:10}}>{tab("D","🚚 DISPATCH",nD)}{tab("P","🛒 PICKING",nP)}</div>
+        {legacyReqs.map(r => <div key={r.id} style={{border:"2px dashed #000", background:FLUO, borderRadius:10, padding:"6px 10px", marginBottom:8, fontSize:13, fontWeight:700}}>🧹 Ancienne demande bloquée ({fmtDateKey(r.date||"")} {fmtTime(r.at)}) <button onClick={()=>libererAncienneDemande(r, allPicking)} style={{marginLeft:8, padding:"4px 10px", borderRadius:8, border:"2px solid #b71c1c", color:"#b71c1c", background:"#fff", fontWeight:900}}>Libérer</button></div>)}
+        {mode==="D" && (
+          <div style={{border:"3px solid "+(genPhoto?"#2e7d32":DISPATCH_COLOR), borderRadius:14, padding:"10px 12px", background:genPhoto?"#e8f5e9":"#fff", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap"}}>
+            {photoInput("ph_general", d=>setGenPhoto(d))}
+            {genPhoto && <img src={genPhoto} alt="" onClick={()=>document.getElementById("ph_general").click()} style={{width:70, height:70, objectFit:"cover", borderRadius:10, border:"3px solid #2e7d32"}} />}
+            <div style={{flex:1, minWidth:150}}><div style={{fontWeight:900, color:DISPATCH_COLOR}}>📷 Photo générale du dispatch</div><div style={{fontSize:12, color:"#666"}}>Une seule photo de la zone : Rungis sait où sont les palettes.</div></div>
+            <button onClick={()=>document.getElementById("ph_general").click()} style={{padding:"12px 14px", borderRadius:12, fontWeight:900, background:genPhoto?"#fff":DISPATCH_COLOR, color:genPhoto?"#2e7d32":"#fff", border:"2px solid "+(genPhoto?"#2e7d32":DISPATCH_COLOR)}}>{genPhoto?"Reprendre":"📷 Prendre la photo"}</button>
+          </div>)}
+        {lieux.length===0 && <div className="pal-empty">{mode==="D" ? "Aucun dispatch du jour en attente d'enlèvement." : "Aucun picking en attente d'enlèvement."}</div>}
+        {lieux.map(L => { const c = siteColor(L.code); const np = L.rows.reduce((a,r)=>a+palOf(r,L),0); const nd = L.rows.reduce((a,r)=>a+dolOf(r),0); const lk = (reqByCode[L.code]||[]);
+          return (
           <div key={L.code} style={{position:"relative", marginTop:26, border:"3px solid "+c, borderLeft:"12px solid "+c, borderRadius:16, background:c+"14", padding:"22px 10px 12px"}}>
             <div style={{position:"absolute", top:-16, left:10, right:10, display:"flex", justifyContent:"space-between", gap:8}}>
               <span style={{background:c, color:"#fff", fontWeight:900, fontSize:17, padding:"4px 12px", borderRadius:8, boxShadow:"0 2px 6px rgba(0,0,0,.2)"}}>📍 {L.code} · {L.label}</span>
-              <span style={{background:"#fff", color:c, border:"3px solid "+c, fontWeight:900, fontSize:16, padding:"2px 10px", borderRadius:8}}>{np} pal.{(dolly[L.code]||0)?` + ${dolly[L.code]} 🧀`:""}</span>
+              <span style={{background:"#fff", color:c, border:"3px solid "+c, fontWeight:900, fontSize:15, padding:"2px 10px", borderRadius:8}}>{np} pal.{nd?` + ${nd} dolly`:""}{(dolly[L.code]||0)&&mode==="D"?` + ${dolly[L.code]} 🧀`:""}{lk.length?` · 🔒 ${lk.length} demandé(s)`:""}</span>
             </div>
+            {lk.map(x => <LockedEnlRow key={x.r.id+"_"+x.i} r={x.r} it={x.it} idx={x.i} myKey={myKey} />)}
             {L.rows.map(r => rowView(r, L, c))}
-            <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:10, padding:"8px 10px", background:"#f1f8e9", border:"2px dashed #689f38", borderRadius:12}}>
+            {mode==="D" && <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:10, padding:"8px 10px", background:"#f1f8e9", border:"2px dashed #689f38", borderRadius:12}}>
               <div style={{fontWeight:900, color:"#33691e"}}>🧀 Dolly fromage <span style={{fontWeight:500, fontSize:11}}>(cagettes vertes)</span></div>
               {stepper(dolly[L.code]||0, v=>setDolly(d=>({...d,[L.code]:v})), 0, "#33691e")}
-            </div>
+            </div>}
           </div>); })}
-        {freeCodes.length>0 && (
+        {mode==="D" && freeCodes.length>0 && (
           <select className="input" style={{marginTop:16, width:"100%", padding:12, fontSize:14}} value="" onChange={e=>{ if(e.target.value) setExtra(x=>[...x, e.target.value]); }}>
             <option value="">➕ Ajouter un lieu (dolly fromage seul)…</option>
             {freeCodes.map(c => <option key={c} value={c}>{c} · {STORE_LONG[c]}</option>)}
@@ -1740,14 +1840,15 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
       </div>
       <div style={{position:"fixed", left:0, right:0, bottom:0, background:"#fff", borderTop:"2px solid #ddd", padding:"10px 14px", zIndex:50}}>
         {built.length>0 && <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:8}}>{built.map(L=>(
-          <span key={L.code} style={{background:L.color, color:"#fff", borderRadius:8, padding:"4px 10px", fontWeight:900, fontSize:14}}>{L.code} : {L.palettes.reduce((a,p)=>a+p.n,0)} pal.{L.dolly?` + ${L.dolly}🧀`:""}</span>))}</div>}
-        <button className="btn-primary" disabled={!built.length||sending} onClick={send} style={{width:"100%", fontSize:18, fontWeight:900, padding:16, background:"#e65100", opacity:built.length?1:.45}}>
-          {sending?"Enregistrement…":`🚛 Enregistrer — ${totPal} palette(s) · ${totDol} dolly`}
+          <span key={L.code} style={{background:L.color, color:"#fff", borderRadius:8, padding:"4px 10px", fontWeight:900, fontSize:14}}>{L.code} : {chipTxt(L)}</span>))}</div>}
+        <button className="btn-primary" disabled={!built.length||sending} onClick={send} style={{width:"100%", fontSize:18, fontWeight:900, padding:16, background:MC, opacity:built.length?1:.45}}>
+          {sending?"Enregistrement…":`🚛 Enregistrer ${mode==="D"?"DISPATCH":"PICKING"} — ${totPal} pal.${totDolD?` · ${totDolD} dolly`:""}${totFro?` · ${totFro} 🧀`:""}`}
         </button>
       </div>
     </div>
   );
 }
+
 
 // v5.13 — Accueil : ce qui est RÉALISÉ et EN ATTENTE d'enlèvement (dispatch / picking), par lieu en couleur.
 function AttenteEnlevement({ allSessions, allPicking, onOpenEnlevement }) {
@@ -1757,7 +1858,7 @@ function AttenteEnlevement({ allSessions, allPicking, onOpenEnlevement }) {
   const disp = lieux.filter(L => L.dispatch);
   const picks = []; lieux.forEach(L => L.pickings.forEach(pk => picks.push({ ...pk, code:L.code, label:L.label })));
   const chip = (code, label) => <span style={{background:siteColor(code), color:"#fff", borderRadius:7, padding:"3px 9px", fontWeight:900, fontSize:13, whiteSpace:"nowrap"}}>📍 {code} · {label}</span>;
-  const box = (col, children, key) => <div key={key} onClick={onOpenEnlevement} style={{border:"2px solid "+col, borderLeft:"8px solid "+col, borderRadius:12, background:"#fff", padding:"8px 10px", marginTop:8, cursor:"pointer"}}>{children}</div>;
+  const box = (col, children, key) => <div key={key} onClick={()=>{ try { localStorage.setItem("enl_mode", String(key).charAt(0)==="p" ? "P" : "D"); } catch(e){} onOpenEnlevement(); }} style={{border:"2px solid "+col, borderLeft:"8px solid "+col, borderRadius:12, background:"#fff", padding:"8px 10px", marginTop:8, cursor:"pointer"}}>{children}</div>;
   return (
     <div className="recap-card" style={{borderLeft:"6px solid #e65100", marginTop:12}}>
       <h3 style={{color:"#e65100", margin:"0 0 4px"}}>⏳ En attente d'enlèvement</h3>
@@ -1834,7 +1935,7 @@ function HomeScreen({ operator, meOp, allSessions, allPicking, adminEmail, onJoi
           )}
           {activePicking.map(s => (
             <button key={s.id} className="btn-secondary" style={{textAlign:"left", padding:14, marginTop:6, borderColor:s.enl?"#000":PICKING_COLOR, border:s.enl?"3px solid #000":undefined, background:s.enl?FLUO:PICKING_BG}} onClick={()=>onJoinPicking(s.id)}>
-              {s.enl && <div style={{fontWeight:900, fontSize:12, color:"#000", marginBottom:4}}>🔒 Enlèvement demandé par {s.enl.by||"?"} à {fmtTime(s.enl.at)} — ne pas modifier</div>}
+              {s.enl && <div style={{fontWeight:900, fontSize:12, color:"#000", marginBottom:4}}>🔒 Enlèvement demandé par {safeName(s.enl.by)} à {fmtTime(s.enl.at)} — ne pas modifier</div>}
               <div style={{display:"flex", justifyContent:"space-between", gap:8, alignItems:"center"}}>
                 <div style={{fontWeight:800, color:"#0d2b5c"}}><span style={{background:PICKING_COLOR, color:"#fff", borderRadius:6, padding:"2px 7px", fontSize:11, marginRight:6}}>PICKING</span>{s.storeLabel}</div>
                 <div style={{fontWeight:900, color:PICKING_COLOR}}>{s.done}/{s.total}</div>
@@ -1865,8 +1966,8 @@ function HomeScreen({ operator, meOp, allSessions, allPicking, adminEmail, onJoi
           🚛 Demander un enlèvement à Rungis
           <div style={{fontSize:12, fontWeight:600, marginTop:4, opacity:.95}}>À tout moment · dispatch + picking + dolly fromage · mail Rungis à 23h59</div>
         </button>
-        <DemandesEnCours me={meOp} />
         <AttenteEnlevement allSessions={allSessions} allPicking={allPicking} onOpenEnlevement={onOpenEnlevement} />
+        <DemandesEnCours me={meOp} allPicking={allPicking} />
       </div>
 
       <div style={{padding:"0 16px 40px", maxWidth:420, margin:"0 auto"}}>
@@ -2653,7 +2754,7 @@ function AdminGate({ operator, onSuccess, onClose }) {
    ========================================================================= */
 function AdminScreen({ operator, adminEmail, allSessions, onClose, onSessionStart, onNeedsNaming, onViewSession, onDecoupeStart }) {
   const [tab, setTab] = useState("load");
-  const opName = (operator && operator.name) ? operator.name : (operator && operator.code ? ("Code "+operator.code) : String(operator||""));
+  const opName = (operator && operator.name) ? operator.name : (operator && operator.code ? "Opérateur" : String(operator||""));
   return (
     <div className="app">
       <div className="header" style={{background:"#0d3d20"}}>
@@ -3129,7 +3230,7 @@ function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
         </div>
       </div>
       <div className="land-foot">
-        {operator && <span style={{fontSize:13, color:"#555", alignSelf:"center"}}>Connecté : <b>{operator.name||("Code "+operator.code)}</b></span>}
+        {operator && <span style={{fontSize:13, color:"#555", alignSelf:"center"}}>Connecté : <b>{operator.name||"Opérateur"}</b></span>}
         {operator && onLogout && <button onClick={onLogout} style={{color:"#c62828"}}>↪ Se déconnecter</button>}
         <button onClick={onResetCache}>🔄 Réinitialiser (cache)</button>
         {!firebaseReady && <span className="admin-note">⚠️ Firebase non disponible — mode local.</span>}
@@ -3204,7 +3305,7 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
       <div className="app">
         <div className="header fr-head" style={{background:"#8a5a00"}}>
           <div className="header-row">
-            <div><h1>🏷️ Traçabilité</h1><div className="sub">{BRAND} • {operator.name||("Code "+operator.code)}</div></div>
+            <div><h1>🏷️ Traçabilité</h1><div className="sub">{BRAND} • {operator.name||"Opérateur"}</div></div>
             <div className="header-actions"><button className="header-btn" onClick={()=>setView("home")}>← Retour</button></div>
           </div>
         </div>
@@ -3217,7 +3318,7 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
     <div className="app">
       <div className="header fr-head" style={{background:"#8a5a00"}}>
         <div className="header-row">
-          <div><h1>Bonjour {operator.name?operator.name.split(/\s+/)[0]:("Code "+operator.code)} 👋</h1><div className="sub">{BRAND} • 🧀 Découpe fromage</div></div>
+          <div><h1>Bonjour {operator.name?operator.name.split(/\s+/)[0]:"Opérateur"} 👋</h1><div className="sub">{BRAND} • 🧀 Découpe fromage</div></div>
           <div className="header-actions"><button className="header-btn" onClick={onBack}>← Menu</button></div>
         </div>
       </div>
@@ -3298,7 +3399,7 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
           )}
         </div>
         <div style={{padding:"0 4px"}}>
-          <button className="btn-secondary" onClick={onLogout} style={{fontSize:13, color:"#c62828", borderColor:"#ffcdd2"}}>↪ Se déconnecter ({operator.name||("Code "+operator.code)})</button>
+          <button className="btn-secondary" onClick={onLogout} style={{fontSize:13, color:"#c62828", borderColor:"#ffcdd2"}}>↪ Se déconnecter ({operator.name||"Opérateur"})</button>
         </div>
       </div>
     </div>
@@ -3886,7 +3987,7 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
       <div className="header fr-head" style={{background:"#8a5a00"}}>
         <div className="header-row">
           <div><h1>🧀 {supplier||"Découpe"}</h1>
-            <div className="sub">{BRAND} • {operator.name||("Code "+operator.code)}{meta&&meta.deliveryDate?` • récep. prévue ${meta.deliveryDate}`:""} • <span className={`conn-status ${!connected?"offline":""}`}>{connected?"● en ligne":"● hors ligne"}</span></div>
+            <div className="sub">{BRAND} • {operator.name||"Opérateur"}{meta&&meta.deliveryDate?` • récep. prévue ${meta.deliveryDate}`:""} • <span className={`conn-status ${!connected?"offline":""}`}>{connected?"● en ligne":"● hors ligne"}</span></div>
           </div>
           <div className="header-actions"><button className="header-btn" onClick={leave}>Quitter</button></div>
         </div>
@@ -4145,7 +4246,7 @@ function DecoupeRecap({ sessionId, operator, supplier, entity, products, state, 
     const kbgOut = day.kbgLines.map(l=>({ entity:"KBG", designation:l.designation, kbgN:l.kbgN, kbgTheo:l.theo||0, rend:(l.rend!=null?l.rend:null), kbgG:Math.round(l.kbgG||0), robG:Math.round(l.montreuilG||0), poidsRecu:Math.round(l.poidsRecu||0) }));
     const robOut = day.robLines.map(l=>({ entity:"ROB", designation:l.designation, robMeules:Math.round((l.robMeules||0)*100)/100, robN:l.robN||0, robG:Math.round(l.robG||0), robUnit:l.robUnit||"meule" }));
     const payload = { action:"log-decoupe-recap", sessionId, journee:true, date:dateStr, dateKey, at:new Date().toISOString(),
-      operator:operator.name||("#"+operator.code), operatorCode:operator.code, brand:BRAND,
+      operator:safeName(operator.name), operatorCode:operator.code, brand:BRAND,
       mailTo:DECOUPE_MAIL, subject:`Découpe du jour — ${dateStr}`,
       subjectKbg:`Découpe Kelbongoo du ${dateStr}`, subjectRob:`Découpe Montreuil du ${dateStr}`,
       nbSessions, rendementPortions:(day.rendPortions!=null?day.rendPortions:null),
@@ -4408,7 +4509,7 @@ function InventaireVinHome({ operator, allVin, onNew, onJoin, onBack, onLogout }
           <div className="pc-store" style={{fontSize:16}}>🍷 {v.meta.label||"Inventaire vin"}</div>
           <span className="pc-num" style={{background:col}}>{st}</span>
         </div>
-        <div style={{fontSize:12, color:"#666", marginBottom:8}}>{fmtTime(v.meta.startedAt)} · {v.meta.createdBy||("Code "+(v.meta.operatorCode||"?"))}</div>
+        <div style={{fontSize:12, color:"#666", marginBottom:8}}>{fmtTime(v.meta.startedAt)} · {safeName(v.meta.createdBy)}</div>
         <div className="pc-foot">
           <div><b>{s.refs}</b> réf.</div>
           <div style={{color:"#7b1e3a"}}><b>{s.units}</b> bouteille(s)</div>
@@ -4454,7 +4555,7 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
   const focusScan = () => { setTimeout(()=>{ if (scanRef.current) scanRef.current.focus({ preventScroll:true }); }, 30); };
   useEffect(()=>{ focusScan(); }, []);
   const flash = (m) => { setToast(m); setTimeout(()=>setToast(""), 1100); };
-  const opBy = operator.name || ("Code " + operator.code);
+  const opBy = operator.name || "Opérateur";
 
   // Écriture d'une ligne (saisie manuelle / désignation).
   const writeLine = (key, patch) => {
@@ -4847,6 +4948,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
   const [closing, setClosing] = useState(false);
   const [closeDlg, setCloseDlg] = useState(null);   // { store } : popup de clôture (lieu à confirmer)
   const [lieuDlg, setLieuDlg] = useState(false);    // popup « corriger le lieu »
+  const [addDlg, setAddDlg] = useState(null);       // v5.15 : ajout manuel { ean, des, sup, qty }
   // Clavier écran masqué tant qu'on ne touche pas le champ (la douchette Zebra n'en a pas besoin).
   const [kbOn, setKbOn] = useState(false);
   // Onglets comme le dispatch : « À faire » (les validés disparaissent) / « Validés » (revoir, corriger, annuler).
@@ -4855,7 +4957,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
   const focusScan = () => { setTimeout(()=>{ if (scanRef.current && !editK) scanRef.current.focus({ preventScroll:true }); }, 40); };
   useEffect(()=>{ focusScan(); }, []);
   const flash = (m, ms) => { setToast(m); setTimeout(()=>setToast(""), ms||1400); };
-  const opBy = operator.name || ("Code " + operator.code);
+  const opBy = operator.name || "Opérateur";
 
   // Regroupement PAR FOURNISSEUR (nom), trié alphabétiquement.
   const groups = useMemo(() => {
@@ -4927,7 +5029,9 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
     const p = eanIdx[ean];
     // Popup ouverte + nouveau scan (Zebra) → on valide d'abord le produit en cours avec la quantité affichée.
     if (editK && p && p.k !== editK && !closed) validate(qBefore);
-    if (!p) { flash("⚠️ Produit absent de ce picking", 1800); try{ navigator.vibrate && navigator.vibrate([80,60,80]); }catch(e){} focusScan(); return; }
+    if (!p) { try{ navigator.vibrate && navigator.vibrate([80,60,80]); }catch(e){}
+      if (closed) { flash("⚠️ Produit absent de ce picking", 1800); focusScan(); return; }
+      setAddDlg({ ean:String(extractEan(raw)||"").replace(/\D/g,""), des:"", sup:"", qty:"1" }); return; }
     try { navigator.vibrate && navigator.vibrate(40); } catch(e){}
     openEdit(p);
   };
@@ -4968,7 +5072,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
       return { supplier:p.supName||p.supCode||"", supCode:p.supCode||"", ean:p.ean||"", designation:p.designation||"", qty:Number(p.qty)||0, picked, ecart:picked-(Number(p.qty)||0), done:!!s.done, doneBy:s.doneBy||"", doneAt:s.doneAt?new Date(s.doneAt).toISOString():"" }; });
     const manques = lines.filter(l => l.ecart < 0);
     const times = products.map(p => state[p.k] && state[p.k].doneAt).filter(Boolean).sort((a,b)=>a-b);
-    const closedObj = { at:Date.now(), by:opBy, operatorCode:operator.code||"", total:lines.length, ok:lines.length-manques.length, short:manques.length,
+    const closedObj = { at:Date.now(), by:opBy, total:lines.length, ok:lines.length-manques.length, short:manques.length,
       qty:lines.reduce((a,l)=>a+l.qty,0), picked:lines.reduce((a,l)=>a+l.picked,0) };
     try {
       if (firebaseReady) {
@@ -4994,6 +5098,20 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
     if (onEnlevement && confirm("Picking clôturé pour "+stLabel+".\n\nDemander l'enlèvement à Rungis maintenant ?")) onEnlevement(); else onLeave();
   };
 
+  const saveAdd = async () => {
+    const d = addDlg; if (!d) return;
+    const des = String(d.des||"").trim(); const q = Math.max(0, Math.floor(Number(String(d.qty).replace(/\D/g,""))||0));
+    if (!des) { alert("Indique le nom du produit."); return; }
+    if (!q) { alert("Indique la quantité mise sur la palette."); return; }
+    if (!firebaseReady) { alert("Hors-ligne : impossible d'ajouter."); return; }
+    const k = "m_" + (d.ean||"x").replace(/[^0-9A-Za-z]/g,"") + "_" + Date.now();
+    const np = { k, ean:d.ean||"", ref:"", designation:des, qty:0, supCode:"", supName:(String(d.sup||"").trim()||"AJOUT MANUEL"), manual:true, addedBy:opBy, addedAt:Date.now() };
+    try {
+      await db.ref(`picking/${pickingId}/meta/products`).transaction(cur => [ ...(Array.isArray(cur)?cur:[]), np ]);
+      await db.ref(`picking/${pickingId}/state/${k}`).set({ done:true, picked:q, qty:0, doneBy:opBy, doneAt:Date.now(), manual:true });
+      flash(`➕ ${des} ajouté (${q})`, 1800); setAddDlg(null); focusScan();
+    } catch(e) { alert("Erreur : "+e.message); }
+  };
   const editP = editK ? products.find(x => x.k === editK) : null;
   const pct = stx.total ? Math.round(stx.done*100/stx.total) : 0;
 
@@ -5015,7 +5133,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
 
 
       <div style={{padding:14, paddingBottom:140, maxWidth:720, margin:"0 auto"}}>
-        {enlLock && <div style={{marginBottom:10, padding:"12px", borderRadius:12, background:FLUO, border:"3px solid #000", color:"#000", fontWeight:900, fontSize:15}}>🔒 Enlèvement demandé par <span style={{background:"#000", color:FLUO, padding:"1px 8px", borderRadius:6}}>{enlLock.by||"?"}</span> à {fmtTime(enlLock.at)}<div style={{fontSize:12, fontWeight:700, marginTop:4}}>Picking verrouillé : plus de modification possible. Seul {enlLock.by||"le demandeur"} peut annuler sa demande (écran Enlèvement).</div></div>}
+        {enlLock && <div style={{marginBottom:10, padding:"12px", borderRadius:12, background:FLUO, border:"3px solid #000", color:"#000", fontWeight:900, fontSize:15}}>🔒 Enlèvement demandé par <span style={{background:"#000", color:FLUO, padding:"1px 8px", borderRadius:6}}>{safeName(enlLock.by)}</span> à {fmtTime(enlLock.at)}<div style={{fontSize:12, fontWeight:700, marginTop:4}}>Picking verrouillé : plus de modification possible. Seul {safeName(enlLock.by)} peut annuler sa demande (écran Enlèvement).</div></div>}
         {closed && !closed.enlLock && <div style={{marginBottom:10, padding:"10px 12px", borderRadius:10, background:"#e8f5e9", border:"1.5px solid #2e7d32", color:"#2e7d32", fontWeight:800, fontSize:14}}>✓ Picking {closed.partial?"clôturé PARTIELLEMENT":"clôturé"} par {closed.by||"—"} à {fmtTime(closed.at)}{closed.partial?` · ${closed.nonPrepares||0} produit(s) non préparé(s)`:""}
           {onEnlevement && !(pick&&pick.enlevement) && <button onClick={onEnlevement} style={{display:"block", width:"100%", marginTop:8, padding:12, borderRadius:10, background:"#e65100", color:"#fff", fontWeight:900, fontSize:15}}>🚛 Demander l'enlèvement à Rungis</button>}</div>}
         {!firebaseReady && <div className="admin-note" style={{color:"#c62828"}}>⚠️ Hors-ligne : le picking ne sera pas synchronisé.</div>}
@@ -5033,6 +5151,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
           {scan && <button onClick={()=>{ setScan(""); focusScan(); }} aria-label="Effacer"
             style={{position:"absolute", right:8, top:"50%", transform:"translateY(-50%)", width:34, height:34, borderRadius:17, background:"#eef2f7", color:"#555", fontSize:18, fontWeight:900}}>✕</button>}
         </div>
+        {!closed && <button onClick={()=>setAddDlg({ ean:"", des:"", sup:"", qty:"1" })} style={{width:"100%", margin:"-6px 0 10px", padding:"10px", borderRadius:10, border:"2px dashed "+PICKING_COLOR, background:"#fff", color:PICKING_COLOR, fontWeight:900, fontSize:14}}>➕ Ajouter un produit hors commande (scan ou saisie)</button>}
         <div style={{fontSize:11, color:"#888", margin:"-4px 2px 12px"}}>{showDone
           ? <>Produits déjà mis sur la palette. Touche une ligne pour <b>corriger</b> la quantité ou <b>annuler</b>.</>
           : <>Carton entier non ouvert : touche <b style={{color:PICKING_COLOR}}>✓</b> sur la ligne. Touche la ligne pour une autre quantité. Une fois validé, le produit passe dans <b>Validés</b>.</>}</div>
@@ -5070,7 +5189,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
                   <div key={p.k} onClick={()=>openEdit(p)}
                     style={{display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, padding:"11px 14px", borderTop:"1px solid #eef1f5", cursor:"pointer", background:d?(sh?"#fff8f0":"#f4fbf5"):"#fff"}}>
                     <div style={{minWidth:0}}>
-                      <div style={{fontWeight:700, fontSize:14, lineHeight:1.25, wordBreak:"break-word", color:d?"#555":"#111"}}>{d?(sh?"⚠️ ":"✅ "):""}{p.designation}</div>
+                      <div style={{fontWeight:700, fontSize:14, lineHeight:1.25, wordBreak:"break-word", color:d?"#555":"#111"}}>{d?(sh?"⚠️ ":"✅ "):""}{p.manual?"➕ ":""}{p.designation}{p.manual?<span style={{fontSize:11, fontWeight:800, color:"#6a1b9a"}}> · ajouté hors commande{p.addedBy?" par "+safeName(p.addedBy):""}</span>:null}</div>
                       <div style={{fontSize:11, color:"#888", fontFamily:"monospace"}}>{p.ean||"sans code"}{d && s.doneBy?` · ${s.doneBy}`:""}</div>
                     </div>
                     <div style={{display:"flex", alignItems:"center", gap:8, whiteSpace:"nowrap"}}>
@@ -5096,6 +5215,27 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
       </div>
 
       {toast && <div className="toast">{toast}</div>}
+      {addDlg && (
+        <div onClick={()=>{ setAddDlg(null); focusScan(); }} style={{position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:1002, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"28px 12px", overflowY:"auto"}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#fff", width:"100%", maxWidth:460, borderRadius:16, padding:18, borderTop:"6px solid "+PICKING_COLOR}}>
+            <div style={{fontWeight:900, fontSize:18}}>➕ Ajouter un produit hors commande</div>
+            <div style={{fontSize:12, color:"#666", margin:"4px 0 12px"}}>Produit pas dans la commande {meta.orderNum||""} mais mis sur la palette {meta.storeCode||""}. Il apparaîtra dans « Validés » et dans le récap (ajout manuel).</div>
+            <label style={{fontSize:12, fontWeight:800, color:"#555"}}>Code-barres (scanne ou tape)</label>
+            <input value={addDlg.ean} inputMode="numeric" autoFocus={!addDlg.ean} onChange={e=>setAddDlg(d=>({ ...d, ean:e.target.value.replace(/\D/g,"").slice(0,14) }))} style={{width:"100%", padding:12, fontSize:18, fontFamily:"monospace", border:"2px solid #ddd", borderRadius:10, margin:"4px 0 10px"}} placeholder="EAN" />
+            <label style={{fontSize:12, fontWeight:800, color:"#555"}}>Nom du produit *</label>
+            <input value={addDlg.des} autoFocus={!!addDlg.ean} onChange={e=>setAddDlg(d=>({ ...d, des:e.target.value }))} style={{width:"100%", padding:12, fontSize:16, border:"2px solid "+PICKING_COLOR, borderRadius:10, margin:"4px 0 10px"}} placeholder="ex. Jus de pomme 1L" />
+            <label style={{fontSize:12, fontWeight:800, color:"#555"}}>Fournisseur (facultatif)</label>
+            <input value={addDlg.sup} onChange={e=>setAddDlg(d=>({ ...d, sup:e.target.value }))} style={{width:"100%", padding:12, fontSize:15, border:"2px solid #ddd", borderRadius:10, margin:"4px 0 10px"}} placeholder="ex. RELAIS VERT" />
+            <label style={{fontSize:12, fontWeight:800, color:"#555"}}>Quantité mise sur la palette *</label>
+            <div style={{display:"flex", alignItems:"center", gap:6, margin:"4px 0 14px"}}>
+              <button onClick={()=>setAddDlg(d=>({ ...d, qty:String(Math.max(0,(Number(d.qty)||0)-1)) }))} style={{width:52, height:52, borderRadius:10, background:"#f0f0f0", fontSize:28, fontWeight:800}}>−</button>
+              <input type="tel" inputMode="numeric" value={addDlg.qty} onChange={e=>setAddDlg(d=>({ ...d, qty:e.target.value.replace(/\D/g,"").slice(0,6) }))} onFocus={e=>e.target.select()} style={{flex:1, minWidth:0, padding:"10px 4px", fontSize:28, fontWeight:900, textAlign:"center", border:"1.5px solid #ddd", borderRadius:10}} />
+              <button onClick={()=>setAddDlg(d=>({ ...d, qty:String((Number(d.qty)||0)+1) }))} style={{width:52, height:52, borderRadius:10, background:PICKING_COLOR, color:"#fff", fontSize:28, fontWeight:800}}>+</button>
+            </div>
+            <button onClick={saveAdd} style={{width:"100%", padding:16, borderRadius:12, background:PICKING_COLOR, color:"#fff", fontWeight:900, fontSize:17}}>➕ Ajouter sur la palette</button>
+            <button onClick={()=>{ setAddDlg(null); focusScan(); }} style={{width:"100%", marginTop:8, padding:10, borderRadius:10, background:"#eef2f7", color:"#555", fontWeight:700}}>Annuler</button>
+          </div>
+        </div>)}
       {(closeDlg || lieuDlg) && (() => {
         const isClose = !!closeDlg; const cur = isClose ? closeDlg.store : (meta.storeCode||"");
         const nd = products.filter(p => !(state[p.k] && state[p.k].done)).length;
@@ -5183,6 +5323,14 @@ function App() {
     ["centrale_op_code","centrale_op_name","centrale_op_at"].forEach(k=>{ try{ localStorage.removeItem(k); }catch(e){} });
     setOperator(null); setModule(null);
   };
+  // v5.15 : opérateur sans nom (ancienne connexion) → Prénom Nom résolus depuis le registre (le code n'est jamais affiché).
+  useEffect(() => {
+    if (!operator || !operator.code || operator.name) return;
+    let alive = true; const c = operator.code;
+    resolveOperatorName(c).then(n => { if (!alive || !n) return; try { localStorage.setItem("centrale_op_name", n); } catch(e){}
+      setOperator(o => (o && o.code===c) ? { ...o, name:n } : o); });
+    return () => { alive = false; };
+  }, [operator && operator.code, operator && operator.name]);
 
   // ----- État module DISPATCH -----
   const [sessionId, setSessionId] = useState(localStorage.getItem("dispatch_sessionId")||"");
@@ -5342,7 +5490,7 @@ function App() {
   /* ---- INVENTAIRE VIN ---- */
   const handleVinStart = () => {
     const invId = `vin_${Date.now()}`;
-    const metaObj = { label:"Inventaire vin", startedAt:Date.now(), dateKey:todayKey(), createdBy:opName, operatorCode:opObj.code };
+    const metaObj = { label:"Inventaire vin", startedAt:Date.now(), dateKey:todayKey(), createdBy:opName };
     if (firebaseReady) db.ref(`inventaire_vin/${invId}/meta`).set(metaObj);
     setVinInvId(invId); setVinView("inv"); setModule("vin");
   };
