@@ -344,7 +344,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.15";
+const APP_VERSION = "v5.17";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -533,6 +533,33 @@ try {
   // Poids de portion Kelbongoo modifiés depuis la console admin.
   try { db.ref("config/kbg_poids").on("value", s=>{ KBG_POIDS_OVR = s.val() || {}; }); } catch(_){}
 } catch(e) { console.error("Firebase init failed", e); }
+
+// v5.17 — Mode APERÇU (ouvert depuis la Console responsable › Vue appli & ménage, ?apercu=1) :
+// bandeau permanent + chaque écriture Firebase demande une confirmation (valable 60 s après un « OK »).
+const APERCU = /[?&]apercu=1(&|$)/.test(location.search);
+if (APERCU && firebaseReady) {
+  try {
+    const R = firebase.database.Reference.prototype;
+    ["set","update","remove","transaction","setWithPriority","setPriority"].forEach(fn => {
+      const orig = R[fn]; if (typeof orig !== "function") return;
+      R[fn] = function(...a){
+        if (!(window.__apercuOkUntil > Date.now())) {
+          if (!window.confirm("👁 APERÇU RESPONSABLE\n\nCette action va être ENREGISTRÉE pour de vrai dans La Centrale.\n\nOK = enregistrer · Annuler = ne rien faire")) {
+            return Promise.reject(new Error("Annulé (aperçu responsable)"));
+          }
+          window.__apercuOkUntil = Date.now() + 60000;
+        }
+        return orig.apply(this, a);
+      };
+    });
+  } catch(e) { console.error("apercu", e); }
+  const showApercu = () => { if (document.getElementById("apercu-bar")) return; const b = document.createElement("div"); b.id = "apercu-bar";
+    b.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#fff8e1;color:#6b5a00;border-top:2px solid #f9a825;font:700 12px -apple-system,Segoe UI,sans-serif;text-align:center;padding:6px 8px;pointer-events:none";
+    b.textContent = "👁 Aperçu responsable — chaque enregistrement demande confirmation"; document.body.appendChild(b); };
+  if (document.body) showApercu(); else document.addEventListener("DOMContentLoaded", showApercu);
+}
+// v5.17 — Éléments ARCHIVÉS depuis la console (« ménage ») : masqués partout sur la tablette.
+const dropArchived = (o) => { const r = {}; Object.entries(o||{}).forEach(([k,v]) => { if (!(v && (v.archived || (v.meta && v.meta.archived)))) r[k] = v; }); return r; };
 
 /* =========================================================================
    HELPERS
@@ -1079,7 +1106,7 @@ function useAllSessions() {
   useEffect(() => {
     if (!firebaseReady) return;
     const ref = db.ref("dispatch");
-    const h = (snap) => setSessions(snap.val()||{});
+    const h = (snap) => setSessions(dropArchived(snap.val()||{}));
     ref.on("value", h);
     return () => ref.off("value", h);
   }, []);
@@ -1469,6 +1496,9 @@ function SupList({ sups, color, max }) {
 
 // v5.14 — Demandes d'enlèvement EN COURS : surlignées FLUO, au nom de la personne, verrouillées pour les autres.
 const FLUO = "#FFF200";
+// v5.17 — Emplacement de la palette dans l'entrepôt (pour que le chauffeur Rungis sache où aller).
+const ZONES = { froid:{ txt:"❄️ Chambre froide", short:"❄️ Ch. froide", col:"#0b7285", bg:"#e3f6f8" }, sec:{ txt:"▣ Entrepôt sec", short:"▣ Ent. sec", col:"#9a6b16", bg:"#fbf2de" } };
+const zoneTxt = (z) => (ZONES[z] && ZONES[z].txt) || "";
 function compressPhoto(file, maxSide, q) {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
@@ -1573,7 +1603,7 @@ function LockedEnlRow({ r, it, idx, myKey }) {
         <span style={{fontSize:26, lineHeight:1}}>☑</span>
         <div style={{flex:1, minWidth:0}}>
           <div style={{fontWeight:900, fontSize:16, color:col}}>{it.type==="DISPATCH" ? "🚚 DISPATCH · Dispatch du jour" : "🛒 PICKING · Commande "+(it.ref||"—")}
-            <span style={{color:"#000"}}> · {enlItemQty(it)}{it.frais?" · ❄️":""}{it.hasPhoto?" · 📷":""}</span></div>
+            <span style={{color:"#000"}}> · {enlItemQty(it)}{it.zone&&ZONES[it.zone]?" · "+ZONES[it.zone].short:""}{it.frais?" · ❄️":""}{it.hasPhoto?" · 📷":""}</span></div>
           <div style={{fontWeight:900, fontSize:13, color:"#000", marginTop:2}}>🔒 Demandé par <span style={{background:"#000", color:FLUO, padding:"1px 8px", borderRadius:6}}>{safeName(r.by)}</span> · {fmtTime(r.at)}{r.date && r.date!==todayKey() ? ` (${fmtDateKey(r.date)})` : ""} · {sent ? "📨 envoyé à Rungis" : "⏳ part à 23h59"}</div>
         </div>
       </div>
@@ -1631,8 +1661,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const [dolly, setDolly] = useState({});      // dolly FROMAGE par lieu (onglet dispatch)
   const [extra, setExtra] = useState([]);
   const [moves, setMoves] = useState({});
-  const [photos, setPhotos] = useState({});    // photo par ligne (picking, facultatif)
-  const [genPhoto, setGenPhoto] = useState(""); // photo GÉNÉRALE du dispatch
+  const [photos, setPhotos] = useState({});    // v5.17 : UNE photo PAR PALETTE (dispatch et picking)
   const [sending, setSending] = useState(false);
   const opBy = safeName(operator && operator.name);
   const myKey = useOwnerKey(operator);
@@ -1640,7 +1669,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const legacyReqs = reqs.filter(isLegacyEnl);
   const wantType = mode==="D" ? "DISPATCH" : "PICKING";
   const reqByCode = useMemo(() => { const m = {}; reqs.filter(r=>!isLegacyEnl(r)).forEach(r => (enlItems(r)||[]).forEach((it,i) => { if (it.type!==wantType) return; (m[it.code] = m[it.code] || []).push({ r, it, i }); })); return m; }, [reqs, wantType]);
-  const DEF = { on:false, n:1, frais:false, merge:"", cond:"pal" };
+  const DEF = { on:false, n:1, frais:false, merge:"", cond:"pal", zone:"" };
   const g = (k) => ({ ...DEF, ...(sel[k]||{}) });
   const upd = (k, patch) => setSel(s => ({ ...s, [k]: { ...DEF, ...(s[k]||{}), ...patch } }));
 
@@ -1682,7 +1711,16 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const photoBtnRow = (r) => { const ph = photos[r.k]; const id = "ph_"+r.k.replace(/[^\w]/g,"_");
     return (<span style={{display:"inline-flex", alignItems:"center", gap:8}}>{photoInput(id, d=>setPhotos(p=>({ ...p, [r.k]:d })))}
       {ph && <img src={ph} alt="" onClick={()=>document.getElementById(id).click()} style={{width:50, height:50, objectFit:"cover", borderRadius:8, border:"3px solid #2e7d32"}} />}
-      <button type="button" onClick={()=>document.getElementById(id).click()} style={{padding:"10px 12px", borderRadius:10, fontWeight:800, fontSize:13, border:"2px solid "+(ph?"#2e7d32":"#999"), background:ph?"#e8f5e9":"#fff", color:ph?"#2e7d32":"#555"}}>📷 {ph?"Reprendre":"Photo (facultatif)"}</button></span>);
+      <button type="button" onClick={()=>document.getElementById(id).click()} style={{padding:"10px 12px", borderRadius:10, fontWeight:800, fontSize:13, border:"2px solid "+(ph?"#2e7d32":"#e65100"), background:ph?"#e8f5e9":"#fff", color:ph?"#2e7d32":"#e65100"}}>📷 {ph?"Reprendre la photo":"Photo de la palette"}</button>
+      {!ph && <span style={{fontSize:11, fontWeight:900, color:"#e65100", background:"#fff3e0", borderRadius:6, padding:"2px 6px"}}>photo ?</span>}</span>);
+  };
+  // v5.17 — emplacement OBLIGATOIRE : chambre froide / entrepôt sec
+  const zoneBtns = (r) => { const s = g(r.k);
+    return (<div style={{marginTop:10}}>
+      <div style={{fontSize:13, fontWeight:900, color:"#333", textTransform:"uppercase", marginBottom:6}}>📍 Où est la palette ? {!s.zone && <span style={{color:"#c62828"}}>— obligatoire</span>}</div>
+      <div style={{display:"flex", gap:8}}>{["froid","sec"].map(z => { const Z = ZONES[z], on = s.zone===z;
+        return <button key={z} type="button" onClick={()=>upd(r.k,{zone:z})} style={{flex:1, padding:"14px 6px", borderRadius:12, fontWeight:900, fontSize:15, border:"3px solid "+(on?Z.col:"#ccc"), background:on?Z.bg:"#fff", color:on?Z.col:"#666"}}>{Z.txt}</button>; })}</div>
+    </div>);
   };
   const condBtn = (r, val, txt, col) => { const s=g(r.k); const on = s.cond===val;
     return <button type="button" onClick={()=>upd(r.k,{cond:val, n:(val===s.cond?s.n:1)})} style={{flex:1, minWidth:90, padding:"12px 6px", borderRadius:12, fontWeight:900, fontSize:14, border:"3px solid "+col, background:on?col:"#fff", color:on?"#fff":col}}>{txt}</button>; };
@@ -1725,9 +1763,10 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
                   <div style={{fontSize:11, color:"#777"}}>1 par défaut — + si ça ne tient pas sur une palette</div></div>
                 {stepper(s.n, v=>upd(r.k,{n:v}), 1, col)}
               </div>)}
+          {!(r.kind==="D" && s.cond==="kbg") && !merged && zoneBtns(r)}
           {!(r.kind==="D" && s.cond==="kbg") && <div style={{display:"flex", gap:8, marginTop:10, flexWrap:"wrap", alignItems:"center"}}>
-            {r.kind==="P" && !merged && photoBtnRow(r)}
-            <button type="button" onClick={()=>upd(r.k,{frais:!s.frais})} style={{padding:"10px 12px", borderRadius:10, fontWeight:900, fontSize:14, border:"2px solid "+(s.frais?"#0277bd":"#bbb"), background:s.frais?"#0277bd":"#fff", color:s.frais?"#fff":"#666"}}>❄️ {s.frais?"Contient du FRAIS":"Frais ?"}</button>
+            {!merged && photoBtnRow(r)}
+            <button type="button" onClick={()=>upd(r.k, s.frais ? {frais:false} : {frais:true, zone:(s.zone||"froid")})} style={{padding:"10px 12px", borderRadius:10, fontWeight:900, fontSize:14, border:"2px solid "+(s.frais?"#0277bd":"#bbb"), background:s.frais?"#0277bd":"#fff", color:s.frais?"#fff":"#666"}}>❄️ {s.frais?"Contient du FRAIS":"Frais ?"}</button>
             {r.kind==="P" && !merged && mergeTargets.length>0 && (
               <select value="" onChange={e=>{ if(e.target.value) upd(r.k,{merge:e.target.value}); }} style={{padding:"9px 8px", borderRadius:10, border:"2px solid #f9a825", fontWeight:800, color:"#8d6e00", background:"#fffdf3"}}>
                 <option value="">🔗 Fusionner sur une autre palette…</option>
@@ -1751,10 +1790,11 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
     const palettes = [];
     L.rows.forEach(r => { const s=g(r.k); if (!s.on) return; const n=palOf(r,L); const dollies=dolOf(r); const kbg = r.kind==="D" && s.cond==="kbg";
       const tgt = (r.kind==="P" && n===0) ? L.rows.find(o=>o.k===s.merge) : null;
-      palettes.push({ key:r.k, type:r.kind==="D"?"DISPATCH":"PICKING", ref:r.ref||"", n, dollies, kbg, cond:r.kind==="D"?s.cond:"pal", frais:!!s.frais && !kbg,
+      const zone = kbg ? "" : (tgt ? (g(tgt.k).zone||"") : (s.zone||""));
+      palettes.push({ key:r.k, type:r.kind==="D"?"DISPATCH":"PICKING", ref:r.ref||"", n, dollies, kbg, cond:r.kind==="D"?s.cond:"pal", frais:!!s.frais && !kbg, zone,
         mergedWith:tgt?("cde "+(tgt.ref||"")):"", sup:r.sups, lines:r.lines, total:r.total, origin:r.origin, sid:r.sid,
-        photo:(r.kind==="P" && n>0) ? (photos[r.k]||"") : "" }); });
-    return { code:L.code, label:L.label, color:siteColor(L.code), dolly:(mode==="D" ? (dolly[L.code]||0) : 0), palettes };
+        photo:(!kbg && (n>0 || dollies>0)) ? (photos[r.k]||"") : "" }); });
+    return { code:L.code, label:L.label, color:siteColor(L.code), dolly:(mode==="D" ? (dolly[L.code]||0) : 0), dollyZone:"froid", palettes };
   }).filter(L => L.palettes.length || L.dolly>0);
   const sumL = (L) => ({ pal:L.palettes.reduce((a,p)=>a+p.n,0), dol:L.palettes.reduce((a,p)=>a+(p.dollies||0),0), kbg:L.palettes.filter(p=>p.kbg).length });
   const totPal = built.reduce((a,L)=>a+sumL(L).pal,0);
@@ -1765,22 +1805,28 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
 
   const send = async () => {
     if (!built.length) return;
-    if (mode==="D" && !genPhoto && built.some(L=>L.palettes.some(p=>!p.kbg)) && !confirm("📷 Pas de photo générale du dispatch.\n\nOK = enregistrer quand même · Annuler = prendre la photo")) return;
-    const recap = built.map(L => `📍 ${L.code} : ${chipTxt(L)}\n`+L.palettes.map(p=>`   • ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref} → ${p.kbg?"via Kelbongoo (pas compté)":p.dollies?p.dollies+" dolly(s)":p.n?p.n+" pal.":"fusionné ("+p.mergedWith+")"}${p.frais?" ❄️":""}${p.origin!==L.code?" (déplacé de "+p.origin+")":""}`).join("\n")).join("\n");
+    // v5.17 — emplacement obligatoire, photo par palette conseillée
+    const noZone = []; const noPhoto = [];
+    built.forEach(L => L.palettes.forEach(p => { if (p.kbg || p.mergedWith) return;
+      const nm = `${L.code} · ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+(p.ref||"—")}`;
+      if (!p.zone) noZone.push(nm); if (!p.photo) noPhoto.push(nm); }));
+    if (noZone.length) { alert("📍 Indique où est la palette (❄️ chambre froide ou ▣ entrepôt sec) pour :\n\n• " + noZone.join("\n• ")); return; }
+    if (noPhoto.length && !confirm(`📷 ${noPhoto.length} palette(s) sans photo :\n\n• ${noPhoto.join("\n• ")}\n\nLa photo aide le chauffeur à trouver la palette.\nOK = enregistrer quand même · Annuler = prendre les photos`)) return;
+    const recap = built.map(L => `📍 ${L.code} : ${chipTxt(L)}\n`+L.palettes.map(p=>`   • ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref} → ${p.kbg?"via Kelbongoo (pas compté)":p.dollies?p.dollies+" dolly(s)":p.n?p.n+" pal.":"fusionné ("+p.mergedWith+")"}${p.zone?" · "+ZONES[p.zone].short:""}${p.frais?" ❄️":""}${p.photo?" 📷":""}${p.origin!==L.code?" (déplacé de "+p.origin+")":""}`).join("\n")).join("\n");
     if (!confirm(`Enregistrer la demande d'enlèvement ${mode==="D"?"DISPATCH":"PICKING"} ?\n\n${recap}\n\nTOTAL : ${totPal} palette(s)${totDolD?` + ${totDolD} dolly(s)`:""}${totFro?` + ${totFro} dolly(s) fromage`:""}\n📨 Mail automatique à Rungis à 23h59.`)) return;
     setSending(true);
     const id = "enl_" + Date.now();
-    const payload = { action:"request-enlevement", id, mode, by:opBy, byKey:myKey, date:dateKey, at:Date.now(), brand:BRAND, photoGeneral:(mode==="D"?genPhoto:""), lieux:clean(built) };
-    const items = []; built.forEach(L => L.palettes.forEach(p => items.push({ key:p.key, code:L.code, type:p.type, ref:p.ref||"", n:p.n, dollies:p.dollies||0, kbg:!!p.kbg, frais:!!p.frais,
+    const payload = { action:"request-enlevement", id, mode, by:opBy, byKey:myKey, date:dateKey, at:Date.now(), brand:BRAND, photoGeneral:"", lieux:clean(built) };
+    const items = []; built.forEach(L => L.palettes.forEach(p => items.push({ key:p.key, code:L.code, type:p.type, ref:p.ref||"", n:p.n, dollies:p.dollies||0, kbg:!!p.kbg, frais:!!p.frais, zone:p.zone||"",
       mergedWith:p.mergedWith||"", origin:p.origin, sid:p.sid||"", total:p.total||0, sups:(p.sup||[]).map(x=>({name:x.name, qty:x.qty})),
-      hasPhoto:!!(p.photo || (p.type==="DISPATCH" && genPhoto)), lines:(p.lines||[]).slice(0,500) })));
+      hasPhoto:!!p.photo, lines:(p.lines||[]).slice(0,500) })));
     const dispClose = {}; const tsBase = Date.now(); let tsI = 0;
     built.forEach(L => L.palettes.forEach(p => { if (p.type==="DISPATCH" && dispClose[p.origin]==null) dispClose[p.origin] = tsBase + (tsI++); }));
     try {
       if (!firebaseReady) throw new Error("connexion indisponible — réessaie dans un instant");
       const up = {};
       up[`enlevements/${id}`] = { at:Date.now(), by:opBy, byKey:myKey, mode, date:dateKey, totPal, totDol:totDolD+totFro, totDolDispatch:totDolD, totFromage:totFro, status:"attente-23h59", items, dispClose,
-        lieux:built.map(L=>({ code:L.code, dolly:L.dolly, pal:sumL(L).pal, dollies:sumL(L).dol })) };
+        lieux:built.map(L=>({ code:L.code, dolly:L.dolly, dollyZone:L.dolly?"froid":"", pal:sumL(L).pal, dollies:sumL(L).dol })) };
       built.forEach(L => L.palettes.forEach(p => {
         if (p.sid) {
           up[`picking/${p.sid}/enlevement`] = { id, at:Date.now(), by:opBy, byKey:myKey };
@@ -1792,7 +1838,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
       // Photos + copie serveur en arrière-plan (l'écran ne reste plus bloqué sur « Enregistrement… »).
       try { fetch((ENLEVEMENT_URL||CODE_VERIFY_URL), { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) }).catch(()=>{}); } catch(_) {}
     } catch(e) { alert("Erreur d'enregistrement : "+e.message); setSending(false); return; }
-    setSending(false); setSel({}); setDolly({}); setPhotos({}); setGenPhoto(""); setMoves({});
+    setSending(false); setSel({}); setDolly({}); setPhotos({}); setMoves({});
     launchCelebration("Demande enregistrée ! 🚛", `${totPal} palette(s)${totDolD?` · ${totDolD} dolly`:""}${totFro?` · ${totFro} 🧀`:""} · mail à Rungis à 23h59`);
   };
   const freeCodes = Object.keys(STORE_LONG).filter(c => !lieux.find(x=>x.code===c));
@@ -1809,13 +1855,9 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
       <div style={{padding:12, paddingBottom:150}}>
         <div style={{display:"flex", gap:8, marginBottom:10}}>{tab("D","🚚 DISPATCH",nD)}{tab("P","🛒 PICKING",nP)}</div>
         {legacyReqs.map(r => <div key={r.id} style={{border:"2px dashed #000", background:FLUO, borderRadius:10, padding:"6px 10px", marginBottom:8, fontSize:13, fontWeight:700}}>🧹 Ancienne demande bloquée ({fmtDateKey(r.date||"")} {fmtTime(r.at)}) <button onClick={()=>libererAncienneDemande(r, allPicking)} style={{marginLeft:8, padding:"4px 10px", borderRadius:8, border:"2px solid #b71c1c", color:"#b71c1c", background:"#fff", fontWeight:900}}>Libérer</button></div>)}
-        {mode==="D" && (
-          <div style={{border:"3px solid "+(genPhoto?"#2e7d32":DISPATCH_COLOR), borderRadius:14, padding:"10px 12px", background:genPhoto?"#e8f5e9":"#fff", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap"}}>
-            {photoInput("ph_general", d=>setGenPhoto(d))}
-            {genPhoto && <img src={genPhoto} alt="" onClick={()=>document.getElementById("ph_general").click()} style={{width:70, height:70, objectFit:"cover", borderRadius:10, border:"3px solid #2e7d32"}} />}
-            <div style={{flex:1, minWidth:150}}><div style={{fontWeight:900, color:DISPATCH_COLOR}}>📷 Photo générale du dispatch</div><div style={{fontSize:12, color:"#666"}}>Une seule photo de la zone : Rungis sait où sont les palettes.</div></div>
-            <button onClick={()=>document.getElementById("ph_general").click()} style={{padding:"12px 14px", borderRadius:12, fontWeight:900, background:genPhoto?"#fff":DISPATCH_COLOR, color:genPhoto?"#2e7d32":"#fff", border:"2px solid "+(genPhoto?"#2e7d32":DISPATCH_COLOR)}}>{genPhoto?"Reprendre":"📷 Prendre la photo"}</button>
-          </div>)}
+        <div style={{border:"2px solid #0b7285", borderRadius:12, padding:"8px 12px", background:"#f1fafb", fontSize:13, fontWeight:700, color:"#0b4f5c"}}>
+          📷 Une <b>photo par palette</b> + 📍 <b>❄️ chambre froide</b> ou <b>▣ entrepôt sec</b> : le chauffeur Rungis sait où aller.
+        </div>
         {lieux.length===0 && <div className="pal-empty">{mode==="D" ? "Aucun dispatch du jour en attente d'enlèvement." : "Aucun picking en attente d'enlèvement."}</div>}
         {lieux.map(L => { const c = siteColor(L.code); const np = L.rows.reduce((a,r)=>a+palOf(r,L),0); const nd = L.rows.reduce((a,r)=>a+dolOf(r),0); const lk = (reqByCode[L.code]||[]);
           return (
@@ -4915,7 +4957,7 @@ function useAllPicking() {
   useEffect(() => {
     if (!firebaseReady) return;
     const ref = db.ref("picking");
-    const h = (snap) => setPk(snap.val()||{});
+    const h = (snap) => setPk(dropArchived(snap.val()||{}));
     ref.on("value", h);
     return () => ref.off("value", h);
   }, []);
