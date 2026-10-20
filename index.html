@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.18";
+const APP_VERSION = "v5.19";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -484,7 +484,16 @@ const FROMAGE_NOMS_REF = (function(){
 
 const _KBG_STOP = new Set(["aop","aoc","igp","fermier","fermiere","bio","de","du","des","la","le","les","sur","d","grand","cru","a","au","1","2"]);
 function _kbgKey(s){ return String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(w=>w&&!_KBG_STOP.has(w)).join(" "); }
-const _KBGREF = FROMAGE_KBG_REF.map(r=>{ const k=_kbgKey(r[0]); return { poids:r[1], key:k, toks:k.split(" ").filter(Boolean) }; });
+// v5.19 — Poids de VENTE Kelbongoo repris du site (producerproducts.json chargé dans la console
+// › Poids Kelbongoo → Firebase config/kbg_produits). Prioritaires sur la liste par défaut ci-dessus.
+let _KBGREF = [];
+function kbgRebuildRef(site){
+  const seen={}, out=[];
+  Object.values(site||{}).forEach(it=>{ if(!it||!(Number(it.g)>0)) return; const k=_kbgKey(it.name); if(!k||seen[k]) return; seen[k]=1; out.push({ poids:Number(it.g), key:k, toks:k.split(" ").filter(Boolean) }); });
+  FROMAGE_KBG_REF.forEach(r=>{ const k=_kbgKey(r[0]); if(!k||seen[k]) return; seen[k]=1; out.push({ poids:r[1], key:k, toks:k.split(" ").filter(Boolean) }); });
+  _KBGREF = out;
+}
+kbgRebuildRef({});
 // Poids de portion Kelbongoo modifiables depuis la console admin (Firebase config/kbg_poids).
 // Clé = _kbgKey(désignation) → poids en grammes. Prioritaire sur la table par défaut.
 let KBG_POIDS_OVR = {};
@@ -567,6 +576,11 @@ try {
   firebaseReady = true;
   // Poids de portion Kelbongoo modifiés depuis la console admin.
   try { db.ref("config/kbg_poids").on("value", s=>{ KBG_POIDS_OVR = s.val() || {}; }); } catch(_){}
+  // v5.19 — poids de vente du site Kelbongoo (+ noms ajoutés à la liste de choix des fromages).
+  try { db.ref("config/kbg_produits/items").on("value", s=>{ const items = s.val() || {}; kbgRebuildRef(items);
+    const have = new Set(FROMAGE_NOMS_REF.map(d=>_kbgKey(d)));
+    Object.values(items).forEach(it=>{ if(it&&it.name&&!have.has(_kbgKey(it.name))){ have.add(_kbgKey(it.name)); FROMAGE_NOMS_REF.push(it.name); } });
+    FROMAGE_NOMS_REF.sort((a,b)=>a.localeCompare(b,"fr")); }); } catch(_){}
 } catch(e) { console.error("Firebase init failed", e); }
 
 // v5.17 — Mode APERÇU (ouvert depuis la Console responsable › Vue appli & ménage, ?apercu=1) :
@@ -1958,6 +1972,22 @@ function AttenteEnlevement({ allSessions, allPicking, onOpenEnlevement }) {
 /* =========================================================================
    ACCUEIL — rejoindre un dispatch + palettes fictives
    ========================================================================= */
+/* v5.19 — Arrivée des palettes fournisseur (liste de dispatch).
+   On pointe « 📦 PALETTE ARRIVÉE » dès qu'elle est à quai → dispatch/<id>/arrivee {at, by}.
+   À 11h30, l'Apps Script « Registre & alertes » envoie à rr@pribon.org la liste des palettes non pointées.
+   Jamais de code opérateur : seulement le Prénom Nom (ou « Opérateur »). */
+const fmtHM = (ts) => ts ? new Date(ts).toLocaleTimeString("fr-FR", { hour:"2-digit", minute:"2-digit" }) : "";
+function paletteRetard(){ const d=new Date(); return d.getHours()*60+d.getMinutes() >= 11*60+30; }
+function paletteArrivee(s, operator, annuler){
+  if (!firebaseReady || !s || !s.id) { alert("Connexion indisponible — réessaie."); return; }
+  const who = (operator && !/^code\s*\d+/i.test(String(operator)) && !/^#?\d{3,}$/.test(String(operator).trim())) ? String(operator) : "Opérateur";
+  if (annuler) {
+    if (!confirm(`Annuler l'arrivée de la palette ${s.supplier} ?`)) return;
+    db.ref(`dispatch/${s.id}/arrivee`).remove().catch(e=>alert("Erreur : "+e.message));
+    return;
+  }
+  db.ref(`dispatch/${s.id}/arrivee`).set({ at:Date.now(), by:who }).catch(e=>alert("Erreur : "+e.message));
+}
 function HomeScreen({ operator, meOp, allSessions, allPicking, adminEmail, onJoinSession, onJoinPicking, onOpenEnlevement, onBack, onLogout }) {
   const dateKey = todayKey();
 
@@ -1967,7 +1997,7 @@ function HomeScreen({ operator, meOp, allSessions, allPicking, adminEmail, onJoi
       if (s && s.meta && s.meta.startedAt) {
         const total = (s.meta.products||[]).length;
         const done = Object.values(s.state||{}).filter(x=>x&&x.done).length;
-        if (done < total) recent.push({ id:sid, supplier:s.meta.supplier, startedAt:s.meta.startedAt, total, done });
+        if (done < total) recent.push({ id:sid, supplier:s.meta.supplier, startedAt:s.meta.startedAt, total, done, arrivee:s.arrivee||null });
       }
     });
     recent.sort((a,b)=>b.startedAt-a.startedAt);
@@ -2030,12 +2060,26 @@ function HomeScreen({ operator, meOp, allSessions, allPicking, adminEmail, onJoi
               Aucun dispatch en cours. Un administrateur doit charger un fichier fournisseur (Admin → Chargement).
             </div>
           )}
-          {activeSessions.map(s => (
-            <button key={s.id} className="btn-secondary" style={{textAlign:"left", padding:14, marginTop:6}} onClick={()=>onJoinSession(s.id)}>
-              <div style={{fontWeight:700, marginBottom:2}}><span style={{background:DISPATCH_COLOR, color:"#fff", borderRadius:6, padding:"2px 7px", fontSize:11, marginRight:6}}>DISPATCH</span>{s.supplier}</div>
-              <div style={{fontSize:11, color:"#666"}}>Démarré à {fmtTime(s.startedAt)} • {s.done}/{s.total} produits faits</div>
-            </button>
-          ))}
+          {activeSessions.length>0 && (()=>{ const n=activeSessions.filter(x=>!(x.arrivee&&x.arrivee.at)&&x.done===0).length;
+            return n>0 ? <div style={{fontSize:12, fontWeight:800, color:paletteRetard()?"#c62828":"#e65100", margin:"2px 0 4px"}}>{paletteRetard()?"⏰ ":"📦 "}{n} palette(s) pas encore pointée(s) « arrivée »{paletteRetard()?" — mail envoyé à 11h30":" — à pointer dès qu'elle arrive (mail à 11h30 sinon)"}</div> : null; })()}
+          {activeSessions.map(s => { const arr = s.arrivee && s.arrivee.at ? s.arrivee : null; const late = !arr && s.done===0 && paletteRetard();
+            return (
+            <div key={s.id} style={{marginTop:6, border:"2px solid "+(arr?DISPATCH_COLOR:(late?"#c62828":"#ffb74d")), borderRadius:12, overflow:"hidden", background:"#fff"}}>
+              <button className="btn-secondary" style={{textAlign:"left", padding:14, margin:0, border:"none", borderRadius:0, width:"100%"}} onClick={()=>onJoinSession(s.id)}>
+                <div style={{fontWeight:700, marginBottom:2}}><span style={{background:DISPATCH_COLOR, color:"#fff", borderRadius:6, padding:"2px 7px", fontSize:11, marginRight:6}}>DISPATCH</span>{s.supplier}</div>
+                <div style={{fontSize:11, color:"#666"}}>Chargé à {fmtTime(s.startedAt)} • {s.done}/{s.total} produits faits</div>
+              </button>
+              {arr ? (
+                <div style={{display:"flex", alignItems:"center", gap:8, padding:"8px 12px", background:"#e8f5e9", fontSize:13, fontWeight:800, color:DISPATCH_COLOR}}>
+                  <span style={{flex:1}}>✅ Palette arrivée à {fmtHM(arr.at)}{arr.by?" · "+arr.by:""}</span>
+                  <button onClick={()=>paletteArrivee(s, operator, true)} style={{border:"1px solid #a5d6a7", background:"#fff", color:"#555", borderRadius:8, padding:"4px 8px", fontSize:11, fontWeight:700}}>↩︎ annuler</button>
+                </div>
+              ) : (
+                <button onClick={()=>paletteArrivee(s, operator, false)} style={{width:"100%", border:"none", padding:"14px 12px", fontSize:17, fontWeight:900, color:"#fff", background:late?"#c62828":"#ef6c00"}}>
+                  📦 PALETTE ARRIVÉE{late?" (en retard — pas reçue à 11h30)":""}
+                </button>
+              )}
+            </div>); })}
         </div>
 
         {/* Enlèvement Rungis */}
