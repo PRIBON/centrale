@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.19";
+const APP_VERSION = "v5.20";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -3363,6 +3363,40 @@ function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
 /* =========================================================================
    DÉCOUPE FROMAGE — accueil (rejoindre une session)
    ========================================================================= */
+/* v5.20 — Registre de traçabilité fromage (Google Sheets par magasin, pour les contrôles).
+   Script « PRIBON — Registre & alertes » : liens + mise à jour à la demande. */
+const REGISTRE_URL = "https://script.google.com/macros/s/AKfycby1Yn7tQgxQ7Gql4Mqt1O4XFd1SCRK8MQiu_9A75PuerIRZGt2aOkC89-1kTwsq_GE3gQ/exec";
+function RegistreCard(){
+  const [liens, setLiens] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const call = (action) => fetch(REGISTRE_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({action}) }).then(r=>r.json());
+  useEffect(() => { let ok=true; call("liens-registre").then(j=>{ if(ok && j && j.ok) setLiens(j.liens||{}); }).catch(()=>{}); return ()=>{ ok=false; }; }, []);
+  const maj = async () => {
+    setBusy(true); setMsg("Mise à jour en cours… (1 min max)");
+    try { const j = await call("maj-registre"); const r = j && j.res;
+      if (r && r.ok) { setLiens(Object.assign({}, r.liens, { maj:r.maj })); setMsg(`✓ À jour : ${r.decoupes} découpe(s), ${r.etiquettes} étiquette(s), ${r.bl} BL`); }
+      else setMsg("⚠️ " + ((j && (j.error || (r && r.error))) || "Réponse inattendue"));
+    } catch(e) { setMsg("⚠️ Pas de connexion — réessaie en wifi."); }
+    setBusy(false);
+  };
+  const lien = (k, lbl, color) => liens && liens[k] ? (
+    <a href={liens[k]} target="_blank" rel="noreferrer" style={{flex:"1 1 30%", minWidth:96, textAlign:"center", textDecoration:"none", background:color, color:"#fff", borderRadius:10, padding:"10px 6px", fontWeight:900, fontSize:13}}>{lbl}</a>
+  ) : null;
+  return (
+    <div className="recap-card" style={{borderLeft:"6px solid #1a4d2e"}}>
+      <h3 style={{color:"#1a4d2e"}}>📗 Registre de traçabilité</h3>
+      <p style={{fontSize:11, color:"#666", margin:"0 0 8px"}}>Pour un contrôle : découpes jour par jour, lots, BL, photos d'étiquettes. Mis à jour toutes les heures.{liens && liens.maj ? ` Dernière MAJ : ${liens.maj}.` : ""}</p>
+      {liens ? (
+        <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
+          {lien("ROB", "🟣 Robespierre", "#6a1b9a")}{lien("KBG", "🔵 Kelbongoo", "#1565c0")}{lien("MAITRE", "📚 Tous lieux", "#1a4d2e")}
+        </div>
+      ) : <div style={{fontSize:12, color:"#999"}}>Chargement des liens…</div>}
+      <button className="btn-secondary" disabled={busy} onClick={maj} style={{marginTop:8, fontSize:13}}>{busy ? "⏳ Mise à jour…" : "⟳ Mettre à jour maintenant"}</button>
+      {msg && <div style={{fontSize:12, fontWeight:700, marginTop:6, color:/^✓/.test(msg)?"#2e7d32":"#6d4c00"}}>{msg}</div>}
+    </div>
+  );
+}
 function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }) {
   const [view, setView] = useState("home"); // home | traca
   const [labels, setLabels] = useState({});
@@ -3519,6 +3553,7 @@ function DecoupeHome({ operator, allDecoupe, onJoin, onStart, onBack, onLogout }
             </div>
           )}
         </div>
+        <RegistreCard />
         <div style={{padding:"0 4px"}}>
           <button className="btn-secondary" onClick={onLogout} style={{fontSize:13, color:"#c62828", borderColor:"#ffcdd2"}}>↪ Se déconnecter ({operator.name||"Opérateur"})</button>
         </div>
