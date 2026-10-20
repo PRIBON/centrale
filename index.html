@@ -209,6 +209,8 @@ function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
   .fr-head { background:#8a5a00; }
   .cheese-card { background:#fff; border:1.5px solid #e6e8ec; border-radius:12px; padding:14px; margin-bottom:10px; }
   .cheese-card.done { background:#e8f5e9; border-color:#4caf50; }
+  .cheese-card.horsbl { background:#fdecea; border:2.5px solid #c62828; }
+  .cheese-card.attbl { border:2px dashed #e65100; }
   .cheese-card .cc-name { font-size:15px; font-weight:800; margin-bottom:6px; }
   .cheese-card .cc-tar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
   .tgt { border-radius:8px; padding:8px 10px; font-size:12px; font-weight:700; flex:1; min-width:120px; text-align:center; }
@@ -344,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.17";
+const APP_VERSION = "v5.18";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -437,6 +439,39 @@ const FROMAGE_UGALAIT_REF = [
   "Tomme aux Fleurs Rebel Cheese","Trèfle du Perche",
 ];
 // Liste de référence dédoublonnée des noms de fromage (KBG + Ugalait), triée alpha.
+/* ===== v5.18 — CONTRÔLE BL : on ne découpe que ce qui est arrivé sur un BL =====
+   Plusieurs arrivages coexistent : chaque BL chargé par le responsable (console) est une découpe
+   bl_<entité>_<n°> avec meta.loadedBy. L'ensemble de ces BL « ouverts » (non clos, < 21 j) forme le
+   stock autorisé. Un fromage qui n'est sur AUCUN BL ouvert ne peut pas être ajouté ni découpé. */
+const BL_OUVERT_JOURS = 21;
+const _blStop = /\b(aop|aoc|igp|bio|fermier|fermiere|de|du|des|la|le|les|d|l|au|aux|et|g|kg|gr|x)\b/g;
+function blNameNorm(x){ return stripAccents(String(x==null?"":x).toLowerCase()).replace(/[^a-z0-9]+/g," ").replace(/\b\d+\s*(g|gr|kg)\b/g," ").replace(_blStop," ").replace(/\s+/g," ").trim(); }
+function blNameMatch(a,b){
+  const x=blNameNorm(a), y=blNameNorm(b); if(!x||!y) return false;
+  if(x===y || x.includes(y) || y.includes(x)) return true;
+  const wx=x.split(" ").filter(w=>w.length>2), wy=y.split(" ").filter(w=>w.length>2); if(!wx.length||!wy.length) return false;
+  const common=wx.filter(w=>wy.includes(w)).length; return common>=Math.min(2, Math.min(wx.length, wy.length));
+}
+// Fromage venu du BL (et non ajouté à la main par l'opérateur).
+function decIsBlProduct(p){ if(!p||p.ajoutOp) return false; return !!(p.article||p.code||p.ref||p.fournisseur||Number(p.poidsRecu)>0); }
+function decBlFromages(meta){
+  if(!meta) return [];
+  if(Array.isArray(meta.blFromages) && meta.blFromages.length) return meta.blFromages.filter(Boolean);
+  return (Array.isArray(meta.products)?meta.products:[]).filter(decIsBlProduct).map(p=>p.designation).filter(Boolean);
+}
+// Liste des BL ouverts (tous fournisseurs / entités), du plus récent au plus ancien.
+function openBlsFrom(allDecoupe){
+  const out=[]; const lim=Date.now()-BL_OUVERT_JOURS*86400000;
+  Object.entries(allDecoupe||{}).forEach(([sid,s])=>{ const m=s&&s.meta; if(!m||!m.loadedBy||m.blClos) return;
+    const at=m.loadedAt||m.startedAt||0; if(at<lim) return;
+    const fr=decBlFromages(m); if(!fr.length) return;
+    out.push({ sid, num:m.docNumber||"", supplier:String(m.supplier||"").split(" → ")[0]||"", entity:(m.entity||"").toUpperCase(), loadedAt:at, fromages:fr }); });
+  return out.sort((a,b)=>b.loadedAt-a.loadedAt);
+}
+function blsForFromage(designation, openBls){ return (openBls||[]).filter(b=>b.fromages.some(f=>blNameMatch(f,designation))); }
+function blShort(b){ const d=new Date(b.loadedAt); return "BL "+(b.num||"?")+(b.supplier?(" · "+b.supplier):"")+" · "+String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0"); }
+// Trace côté console : tentative refusée / découpe hors BL.
+function decAlerte(type, data){ try{ if(firebaseReady) db.ref("decoupe_alertes").push({ type, at:Date.now(), ...data }).catch(()=>{}); }catch(e){} }
 const FROMAGE_NOMS_REF = (function(){
   const seen=new Set(), out=[];
   const norm=(d)=>(d||"").toString().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").trim();
@@ -3905,7 +3940,34 @@ function NumField({ display, empty, color, onOpen, borderColor, big }) {
    DÉCOUPE FROMAGE — écran principal (liste des fromages)
    ========================================================================= */
 function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLeave }) {
-  const { state, meta, serverMeta, connected, setRow, flushNow, ensureMeta, pending, syncedAt } = useDecoupeSession(sessionId, operator);
+  const { state, meta, serverMeta, connected, setRow:setRowRaw, flushNow, ensureMeta, pending, syncedAt } = useDecoupeSession(sessionId, operator);
+  // v5.18 — arrivages en cours (plusieurs BL ouverts en même temps)
+  const allDecBl = useAllDecoupe();
+  const openBls = useMemo(() => openBlsFrom(allDecBl), [allDecBl]);
+  const ownBlLoaded = !!(serverMeta && serverMeta.loadedBy);
+  // Statut BL d'un fromage : "ok" (sur un BL ouvert), "attente" (le BL de cette découpe n'est pas encore chargé),
+  // "hors" (sur aucun BL ouvert alors que le BL de la découpe est chargé) → interdit.
+  const blStatus = useCallback((designation) => {
+    const own = ownBlLoaded ? decBlFromages(serverMeta) : [];
+    if (own.some(f=>blNameMatch(f,designation))) return { st:"ok", bls:[{num:(serverMeta&&serverMeta.docNumber)||""}] };
+    const bls = blsForFromage(designation, openBls);
+    if (bls.length) return { st:"ok", bls };
+    if (!ownBlLoaded && !openBls.length) return { st:"attente", bls:[] };
+    if (!ownBlLoaded && meta && meta.docNumber) return { st:"attente", bls:[] };
+    return { st:"hors", bls:[] };
+  }, [openBls, ownBlLoaded, serverMeta, meta]);
+  const blMsgList = () => openBls.length ? openBls.slice(0,6).map(b=>"• "+blShort(b)).join("\n") : "• aucun BL chargé";
+  const horsKeysRef = useRef(new Set());
+  const horsNamesRef = useRef({});
+  const setRow = useCallback((key, patch) => {
+    if (horsKeysRef.current.has(key)) {
+      const nm = (horsNamesRef.current[key]) || key.replace(/^d_/,"").replace(/_/g," ");
+      alert("⛔ STOP — « "+nm+" » n'est sur AUCUN BL en cours.\n\nOn ne découpe et on n'envoie QUE les fromages arrivés sur un BL.\nArrivages en cours :\n"+blMsgList()+"\n\n➜ Mets ce fromage de côté et préviens le responsable.");
+      decAlerte("saisie_refusee", { fromage:nm, sid:sessionId, bl:(meta&&meta.docNumber)||"", op:operator.name||"" });
+      return;
+    }
+    setRowRaw(key, patch);
+  }, [setRowRaw, sessionId, meta, operator, openBls]);
   const [blEdit, setBlEdit] = useState("");
   // Quitter : alerte bloquante si des saisies ne sont PAS encore arrivées à la console ;
   // découpe vide (aucun fromage, rien saisi) → on ne laisse aucune ligne « parasite ».
@@ -3972,8 +4034,16 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
     const nom = ((nomArg!=null?nomArg:newFr)||"").trim(); if(!nom) return;
     const exists = srcProducts.some(p=>frKey(p,0)===frKey({designation:nom},0));
     if(exists){ setNewFr(""); setAddManual(false); return; }
+    const bs = blStatus(nom);
+    if (bs.st==="hors") {
+      alert("⛔ IMPOSSIBLE — « "+nom+" » n'est sur AUCUN BL en cours.\n\nOn ne découpe que ce qui est arrivé sur un BL.\nArrivages en cours :\n"+blMsgList()+"\n\n➜ Ne le découpe pas. Préviens le responsable : il doit charger le BL de ce fromage dans la console.");
+      decAlerte("ajout_refuse", { fromage:nom, sid:sessionId, bl:(meta&&meta.docNumber)||"", op:operator.name||"" });
+      setNewFr(""); setAddManual(false); return;
+    }
+    if (bs.st==="attente" && !confirm("⏳ « "+nom+" » n'est sur aucun BL chargé pour l'instant.\n\nTu peux le préparer en attendant le BL n°"+((meta&&meta.docNumber)||"?")+", MAIS s'il n'est pas sur ce BL il sera bloqué et signalé au responsable.\n\nL'ajouter quand même ?")) { setNewFr(""); setAddManual(false); return; }
     const rp = kbgRefPoids(nom);
-    const np = { article:"", designation:nom, fournisseur:"", robCmd:0, kbgTarget:0, poids:(rp>0?rp:FROMAGE_DEFAULT_POIDS), tol:FROMAGE_DEFAULT_TOL };
+    const np = { article:"", designation:nom, fournisseur:"", robCmd:0, kbgTarget:0, poids:(rp>0?rp:FROMAGE_DEFAULT_POIDS), tol:FROMAGE_DEFAULT_TOL,
+                 ajoutOp:true, ajoutBy:operator.name||"", ajoutAt:Date.now(), blAuto:(bs.bls[0]&&bs.bls[0].num)||"" };
     const next = [...srcProducts, np];
     try{ localStorage.setItem(decPKey(sessionId), JSON.stringify(next)); }catch(e){} // sauvegarde locale immédiate (marche hors ligne)
     const ts = decMarkDirty(sessionId);
@@ -3991,13 +4061,25 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
   // Menu <select> natif : fiable sur toutes les tablettes (la datalist ne marchait pas sur certaines).
   const addOptions = useMemo(() => {
     const seen=new Set(), bl=[], ref=[];
+    // v5.18 : un groupe par arrivage (BL ouvert). La liste de référence n'est proposée que tant que le BL de la découpe n'est pas chargé.
+    const groups = openBls.map(b=>({ label:"📦 "+blShort(b), items:b.fromages.filter(d=>{ const k=frKey({designation:d},0); if(presentKeys.has(k)) return false; return true; }).sort((x,y)=>x.localeCompare(y,"fr")) })).filter(g=>g.items.length);
+    if (openBls.length || ownBlLoaded) return { bl:[], ref:[], groups, refAllowed:!ownBlLoaded };
     const nk=(d)=>stripAccents((d||"").toLowerCase()).trim();
     let lastBl=[]; try { lastBl=JSON.parse(localStorage.getItem("centrale_last_bl_fromages")||"[]"); } catch(e){}
     lastBl.forEach(d=>{ const k=nk(d); if(d&&!seen.has(k)&&!presentKeys.has(frKey({designation:d},0))){ seen.add(k); bl.push(d); } });
     FROMAGE_NOMS_REF.forEach(d=>{ const k=nk(d); if(!seen.has(k)&&!presentKeys.has(frKey({designation:d},0))){ seen.add(k); ref.push(d); } });
     bl.sort((a,b)=>a.localeCompare(b,"fr"));
-    return { bl, ref };
-  }, [presentKeys]);
+    return { bl, ref, groups:[], refAllowed:true };
+  }, [presentKeys, openBls, ownBlLoaded]);
+  // Fromages de la liste qui ne sont sur aucun BL en cours (rouge, verrouillés) / en attente du BL (orange).
+  const blFlags = useMemo(() => { const m={}; list.forEach(p=>{ m[p._pkey]=blStatus(p.designation); }); return m; }, [list, blStatus]);
+  const horsList = useMemo(() => list.filter(p=>blFlags[p._pkey]&&blFlags[p._pkey].st==="hors"), [list, blFlags]);
+  horsKeysRef.current = new Set(horsList.map(p=>p._pkey));
+  horsNamesRef.current = Object.fromEntries(horsList.map(p=>[p._pkey, p.designation]));
+  // Signale une seule fois au responsable un fromage hors BL déjà découpé dans cette découpe.
+  const horsSignaled = useRef({});
+  useEffect(() => { horsList.forEach(p=>{ const st=state[p._pkey]; const hasCut=st&&(st.portionsKbg||st.kgMontreuil||st.poidsDecoupe||(st.rob&&(st.rob.meules||st.rob.morceaux))||(st.pieces&&st.pieces.length)||st.sticker);
+      if(hasCut && !horsSignaled.current[p._pkey]){ horsSignaled.current[p._pkey]=1; decAlerte("decoupe_hors_bl", { fromage:p.designation, sid:sessionId, bl:(meta&&meta.docNumber)||"", op:operator.name||"" }); } }); }, [horsList, state]);
   // Mémorise la liste des fromages du dernier BL réellement chargé, pour la reproposer à l'ajout (même hors ligne / nouveau jour).
   useEffect(() => {
     if (meta && meta.docNumber && Array.isArray(meta.products) && meta.products.length) {
@@ -4083,14 +4165,19 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
               {!addManual ? (
                 <select value="" onChange={e=>{ const v=e.target.value; if(v==="__manual__"){ setAddManual(true); setNewFr(""); } else if(v){ addFromage(v); } }} style={{width:"100%", padding:11, border:"1.5px solid #8a5a00", borderRadius:8, fontSize:15, fontWeight:600, background:"#fff", color:"#8a5a00"}}>
                   <option value="">➕ Ajouter un fromage à découper…</option>
+                  {addOptions.groups.map((g,gi)=>(
+                    <optgroup key={"g"+gi} label={g.label}>
+                      {g.items.map((d,i)=><option key={"g"+gi+"_"+i} value={d}>{d}</option>)}
+                    </optgroup>
+                  ))}
                   {addOptions.bl.length>0 && (
                     <optgroup label="🧀 Dernier BL connu">
                       {addOptions.bl.map((d,i)=><option key={"b"+i} value={d}>{d}</option>)}
                     </optgroup>
                   )}
-                  <optgroup label="Référence fromages">
+                  {addOptions.refAllowed && addOptions.ref.length>0 && <optgroup label={addOptions.groups.length?"Autres (à confirmer par le BL)":"Référence fromages"}>
                     {addOptions.ref.map((d,i)=><option key={"r"+i} value={d}>{d}</option>)}
-                  </optgroup>
+                  </optgroup>}
                   <option value="__manual__">➕ Autre — saisir à la main…</option>
                 </select>
               ) : (
@@ -4108,6 +4195,18 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
                   <input value={blEdit} onChange={e=>setBlEdit(e.target.value)} placeholder="N° BL" inputMode="numeric" style={{width:90, padding:8, border:"1.5px solid #e65100", borderRadius:6, fontSize:14}} />
                   <button onClick={saveBl} disabled={!blEdit.trim()} style={{padding:"8px 12px", borderRadius:6, background:blEdit.trim()?"#e65100":"#ccc", color:"#fff", fontWeight:800, border:"none"}}>OK</button>
                 </div>}
+            {horsList.length>0 && (
+              <div style={{background:"#c62828", color:"#fff", borderRadius:10, padding:"12px 14px", margin:"0 2px 10px", fontWeight:800, fontSize:14, animation:"updPulse 1.5s infinite"}}>
+                ⛔ {horsList.length} fromage{horsList.length>1?"s":""} sur AUCUN BL : {horsList.map(p=>p.designation).join(", ")}
+                <div style={{fontWeight:600, fontSize:12, marginTop:4}}>Ne pas découper, ne pas envoyer. Mets de côté et préviens le responsable. (Le responsable est alerté dans la console.)</div>
+              </div>
+            )}
+            {openBls.length>0 && (
+              <details style={{background:"#fff8e1", border:"1px solid #f0c36d", borderRadius:8, padding:"6px 10px", margin:"0 2px 10px", fontSize:12}}>
+                <summary style={{fontWeight:800, color:"#8a5a00", cursor:"pointer"}}>📦 {openBls.length} arrivage{openBls.length>1?"s":""} en cours (BL ouverts) — seuls ces fromages peuvent être découpés</summary>
+                {openBls.map(b=>(<div key={b.sid} style={{marginTop:6}}><b>{blShort(b)}</b> <span style={{color:"#777"}}>({b.entity==="ROB"?"Montreuil":b.entity==="KBG"?"Kelbongoo":b.entity}) · {b.fromages.length} fromage(s)</span><div style={{color:"#555"}}>{b.fromages.join(" · ")}</div></div>))}
+              </details>
+            )}
             {filtered.length===0 && <div style={{textAlign:"center", padding:40, color:"#999"}}>Aucun fromage. Ajoute-en un ci-dessus, ou attends le BL.</div>}
             {filtered.map(p => {
               const st = state[p._pkey]||{}; const agg = frAggFull(p, st); const isDone = st.done;
@@ -4122,7 +4221,9 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
               const decKg = (st.poidsDecoupe!=null && st.poidsDecoupe!=="") ? Number(st.poidsDecoupe) : null;
               const restantKg = (recuKg>0 && decKg!=null) ? Math.round((recuKg-decKg)*10)/10 : (recuKg>0?recuKg:null);
               return (
-                <div className={`cheese-card ${isDone?"done":""}`} key={p._pkey}>
+                <div className={`cheese-card ${isDone?"done":""} ${blFlags[p._pkey]&&blFlags[p._pkey].st==="hors"?"horsbl":""} ${blFlags[p._pkey]&&blFlags[p._pkey].st==="attente"?"attbl":""}`} key={p._pkey}>
+                  {blFlags[p._pkey]&&blFlags[p._pkey].st==="hors" && <div style={{background:"#c62828", color:"#fff", borderRadius:8, padding:"8px 10px", fontWeight:800, fontSize:13, marginBottom:8}}>⛔ PAS SUR LE BL — ne pas découper, ne pas envoyer. Saisie bloquée.</div>}
+                  {blFlags[p._pkey]&&blFlags[p._pkey].st==="attente" && <div style={{background:"#fff3e0", color:"#e65100", borderRadius:8, padding:"6px 10px", fontWeight:700, fontSize:12, marginBottom:8}}>⏳ En attente du BL n°{(meta&&meta.docNumber)||"?"} — sera bloqué s'il n'y figure pas.</div>}
                   <div className="cc-name">{p.designation}{isDone && <span className="done-badge" style={{marginLeft:8}}>✓ {st.doneBy}</span>}{rec==="ok"&&<span className="badge" style={{marginLeft:6, background:"#e8f5e9", color:"#2e7d32", fontSize:11, padding:"2px 7px", borderRadius:9}}>reçu</span>}{rec==="nonconf"&&<span className="badge" style={{marginLeft:6, background:"#fdecea", color:"#c62828", fontSize:11, padding:"2px 7px", borderRadius:9}}>non conf.</span>}</div>
                   {/* ---- À LA PIÈCE : fromage NON découpé, vendu tel quel ---- */}
                   <label style={{display:"flex", alignItems:"center", gap:8, fontSize:13, margin:"2px 0 8px", padding:"8px 10px", fontWeight:800, color:st.sticker?"#e65100":"#555", background:st.sticker?"#fff3e0":"#f7f7f9", border:`1.5px solid ${st.sticker?"#e65100":"#e0e0e0"}`, borderRadius:8}}>
