@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.20";
+const APP_VERSION = "v5.21";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -1546,6 +1546,8 @@ function SupList({ sups, color, max }) {
 // v5.14 — Demandes d'enlèvement EN COURS : surlignées FLUO, au nom de la personne, verrouillées pour les autres.
 const FLUO = "#FFF200";
 // v5.17 — Emplacement de la palette dans l'entrepôt (pour que le chauffeur Rungis sache où aller).
+// v5.21 — palettes EPAL : magasins suivis (les palettes EPAL envoyées doivent revenir à PDP)
+const EPAL_STORES = ["ROB","TOL","BIC"];
 const ZONES = { froid:{ txt:"❄️ Chambre froide", short:"❄️ Ch. froide", col:"#0b7285", bg:"#e3f6f8" }, sec:{ txt:"▣ Entrepôt sec", short:"▣ Ent. sec", col:"#9a6b16", bg:"#fbf2de" } };
 const zoneTxt = (z) => (ZONES[z] && ZONES[z].txt) || "";
 function compressPhoto(file, maxSide, q) {
@@ -1718,7 +1720,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const legacyReqs = reqs.filter(isLegacyEnl);
   const wantType = mode==="D" ? "DISPATCH" : "PICKING";
   const reqByCode = useMemo(() => { const m = {}; reqs.filter(r=>!isLegacyEnl(r)).forEach(r => (enlItems(r)||[]).forEach((it,i) => { if (it.type!==wantType) return; (m[it.code] = m[it.code] || []).push({ r, it, i }); })); return m; }, [reqs, wantType]);
-  const DEF = { on:false, n:1, frais:false, merge:"", cond:"pal", zone:"" };
+  const DEF = { on:false, n:1, frais:false, merge:"", cond:"pal", zone:"", epalN:null }; // v5.21 — epalN null = toutes EPAL
   const g = (k) => ({ ...DEF, ...(sel[k]||{}) });
   const upd = (k, patch) => setSel(s => ({ ...s, [k]: { ...DEF, ...(s[k]||{}), ...patch } }));
 
@@ -1743,6 +1745,8 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   // palettes réelles d'une ligne (0 si fusionnée, dolly ou via Kelbongoo)
   const palOf = (r, L) => { const s=g(r.k); if (!s.on) return 0; if (r.kind==="D" && s.cond!=="pal") return 0;
     if (s.merge && L.rows.some(o=>o.k===s.merge && g(o.k).on && !g(o.k).merge)) return 0; return s.n; };
+  // v5.21 — nombre de palettes EPAL d'une ligne (par défaut : toutes)
+  const epalOf = (r, L) => { const n = palOf(r, L); if (!n) return 0; const s = g(r.k); return s.epalN==null ? n : Math.max(0, Math.min(s.epalN, n)); };
   const dolOf = (r) => { const s=g(r.k); return (s.on && r.kind==="D" && s.cond==="dolly") ? s.n : 0; };
   const label = (r) => r.kind==="D" ? "Dispatch du jour" : `Commande ${r.ref||"—"}`;
 
@@ -1769,6 +1773,24 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
       <div style={{fontSize:13, fontWeight:900, color:"#333", textTransform:"uppercase", marginBottom:6}}>📍 Où est la palette ? {!s.zone && <span style={{color:"#c62828"}}>— obligatoire</span>}</div>
       <div style={{display:"flex", gap:8}}>{["froid","sec"].map(z => { const Z = ZONES[z], on = s.zone===z;
         return <button key={z} type="button" onClick={()=>upd(r.k,{zone:z})} style={{flex:1, padding:"14px 6px", borderRadius:12, fontWeight:900, fontSize:15, border:"3px solid "+(on?Z.col:"#ccc"), background:on?Z.bg:"#fff", color:on?Z.col:"#666"}}>{Z.txt}</button>; })}</div>
+    </div>);
+  };
+  // v5.21 — EPAL par défaut ; case « Autre format » (et, si plusieurs palettes, combien sont EPAL)
+  const epalBox = (r) => { const s = g(r.k); const n = s.n; const e = s.epalN==null ? n : Math.max(0, Math.min(s.epalN, n)); const autre = e < n;
+    const suivi = EPAL_STORES.includes(dest(r));
+    return (<div style={{marginTop:10, padding:"10px 12px", borderRadius:12, border:"3px solid "+(autre?"#c62828":"#8d6e63"), background:autre?"#fdecea":"#efebe9"}}>
+      <div onClick={()=>upd(r.k,{epalN: autre ? null : 0})} style={{display:"flex", alignItems:"center", gap:10, cursor:"pointer"}}>
+        <span style={{fontSize:28, lineHeight:1}}>{autre?"☑":"☐"}</span>
+        <div style={{flex:1}}>
+          <div style={{fontSize:15, fontWeight:900, color:autre?"#c62828":"#5d4037"}}>{autre ? "⚠️ AUTRE FORMAT (pas EPAL)" : "🟫 Palette EPAL"}</div>
+          <div style={{fontSize:11, color:"#666"}}>{autre ? "Toucher pour remettre en EPAL" : "Cocher si ce n'est PAS une palette EPAL"}</div>
+        </div>
+      </div>
+      {autre && n>1 && <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, marginTop:8, flexWrap:"wrap"}}>
+        <div style={{fontSize:13, fontWeight:900, color:"#5d4037", textTransform:"uppercase"}}>Dont EPAL</div>
+        {stepper(e, v=>upd(r.k,{epalN: v>=n ? null : Math.max(0, v)}), 0, "#5d4037")}
+      </div>}
+      <div style={{fontSize:11, fontWeight:700, color:suivi?"#5d4037":"#999", marginTop:6}}>{suivi ? `${e} palette(s) EPAL à rendre par ${dest(r)}` : `${dest(r)} : palettes EPAL non suivies`}</div>
     </div>);
   };
   const condBtn = (r, val, txt, col) => { const s=g(r.k); const on = s.cond===val;
@@ -1812,6 +1834,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
                   <div style={{fontSize:11, color:"#777"}}>1 par défaut — + si ça ne tient pas sur une palette</div></div>
                 {stepper(s.n, v=>upd(r.k,{n:v}), 1, col)}
               </div>)}
+          {!(r.kind==="D" && s.cond!=="pal") && !merged && epalBox(r)}
           {!(r.kind==="D" && s.cond==="kbg") && !merged && zoneBtns(r)}
           {!(r.kind==="D" && s.cond==="kbg") && <div style={{display:"flex", gap:8, marginTop:10, flexWrap:"wrap", alignItems:"center"}}>
             {!merged && photoBtnRow(r)}
@@ -1840,7 +1863,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
     L.rows.forEach(r => { const s=g(r.k); if (!s.on) return; const n=palOf(r,L); const dollies=dolOf(r); const kbg = r.kind==="D" && s.cond==="kbg";
       const tgt = (r.kind==="P" && n===0) ? L.rows.find(o=>o.k===s.merge) : null;
       const zone = kbg ? "" : (tgt ? (g(tgt.k).zone||"") : (s.zone||""));
-      palettes.push({ key:r.k, type:r.kind==="D"?"DISPATCH":"PICKING", ref:r.ref||"", n, dollies, kbg, cond:r.kind==="D"?s.cond:"pal", frais:!!s.frais && !kbg, zone,
+      palettes.push({ key:r.k, type:r.kind==="D"?"DISPATCH":"PICKING", ref:r.ref||"", n, epalN:epalOf(r,L), dollies, kbg, cond:r.kind==="D"?s.cond:"pal", frais:!!s.frais && !kbg, zone,
         mergedWith:tgt?("cde "+(tgt.ref||"")):"", sup:r.sups, lines:r.lines, total:r.total, origin:r.origin, sid:r.sid,
         photo:(!kbg && (n>0 || dollies>0)) ? (photos[r.k]||"") : "" }); });
     return { code:L.code, label:L.label, color:siteColor(L.code), dolly:(mode==="D" ? (dolly[L.code]||0) : 0), dollyZone:"froid", palettes };
@@ -1861,12 +1884,12 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
       if (!p.zone) noZone.push(nm); if (!p.photo) noPhoto.push(nm); }));
     if (noZone.length) { alert("📍 Indique où est la palette (❄️ chambre froide ou ▣ entrepôt sec) pour :\n\n• " + noZone.join("\n• ")); return; }
     if (noPhoto.length && !confirm(`📷 ${noPhoto.length} palette(s) sans photo :\n\n• ${noPhoto.join("\n• ")}\n\nLa photo aide le chauffeur à trouver la palette.\nOK = enregistrer quand même · Annuler = prendre les photos`)) return;
-    const recap = built.map(L => `📍 ${L.code} : ${chipTxt(L)}\n`+L.palettes.map(p=>`   • ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref} → ${p.kbg?"via Kelbongoo (pas compté)":p.dollies?p.dollies+" dolly(s)":p.n?p.n+" pal.":"fusionné ("+p.mergedWith+")"}${p.zone?" · "+ZONES[p.zone].short:""}${p.frais?" ❄️":""}${p.photo?" 📷":""}${p.origin!==L.code?" (déplacé de "+p.origin+")":""}`).join("\n")).join("\n");
+    const recap = built.map(L => `📍 ${L.code} : ${chipTxt(L)}\n`+L.palettes.map(p=>`   • ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref} → ${p.kbg?"via Kelbongoo (pas compté)":p.dollies?p.dollies+" dolly(s)":p.n?p.n+" pal.":"fusionné ("+p.mergedWith+")"}${p.n?(p.epalN<p.n?" · ⚠️ "+(p.n-p.epalN)+" autre format":" · EPAL"):""}${p.zone?" · "+ZONES[p.zone].short:""}${p.frais?" ❄️":""}${p.photo?" 📷":""}${p.origin!==L.code?" (déplacé de "+p.origin+")":""}`).join("\n")).join("\n");
     if (!confirm(`Enregistrer la demande d'enlèvement ${mode==="D"?"DISPATCH":"PICKING"} ?\n\n${recap}\n\nTOTAL : ${totPal} palette(s)${totDolD?` + ${totDolD} dolly(s)`:""}${totFro?` + ${totFro} dolly(s) fromage`:""}\n📨 Mail automatique à Rungis à 23h59.`)) return;
     setSending(true);
     const id = "enl_" + Date.now();
     const payload = { action:"request-enlevement", id, mode, by:opBy, byKey:myKey, date:dateKey, at:Date.now(), brand:BRAND, photoGeneral:"", lieux:clean(built) };
-    const items = []; built.forEach(L => L.palettes.forEach(p => items.push({ key:p.key, code:L.code, type:p.type, ref:p.ref||"", n:p.n, dollies:p.dollies||0, kbg:!!p.kbg, frais:!!p.frais, zone:p.zone||"",
+    const items = []; built.forEach(L => L.palettes.forEach(p => items.push({ key:p.key, code:L.code, type:p.type, ref:p.ref||"", n:p.n, epalN:p.epalN||0, epal:p.n>0 && p.epalN===p.n, dollies:p.dollies||0, kbg:!!p.kbg, frais:!!p.frais, zone:p.zone||"",
       mergedWith:p.mergedWith||"", origin:p.origin, sid:p.sid||"", total:p.total||0, sups:(p.sup||[]).map(x=>({name:x.name, qty:x.qty})),
       hasPhoto:!!p.photo, lines:(p.lines||[]).slice(0,500) })));
     const dispClose = {}; const tsBase = Date.now(); let tsI = 0;
