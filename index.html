@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.21";
+const APP_VERSION = "v5.22";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -3663,8 +3663,26 @@ function decoupeDayKey(sess){ const t=(sess&&sess.meta&&sess.meta.startedAt)||0;
 /* Bilan CONSOLIDÉ d'une journée : agrège TOUTES les sessions de découpe du jour
    (Kelbongoo + Montreuil, tous les BL, découpe libre) → un seul récap à envoyer.
    Chaque session garde son entité ; les fromages sont fusionnés par désignation. */
+// v5.22 — jamais de code opérateur dans le mail / CSV : seulement le nom.
+function djSafeBy(v){ v=String(v||"").trim(); return (!v || /^#/.test(v) || /^code\s*\d+/i.test(v) || /^\d+$/.test(v)) ? "Opérateur" : v; }
+// v5.22 — empreinte du récap du jour (le script n'envoie que si quelque chose a changé).
+function djHash(str){ let h=5381; for (let i=0;i<str.length;i++){ h=((h<<5)+h+str.charCodeAt(i))|0; } return (h>>>0).toString(36); }
+// v5.22 — publie le récap du jour dans decoupe_jour/<jour>/data → mail automatique à rr@ (Apps Script « MailDecoupe »).
+async function publishDecoupeJour(allDecoupe){
+  if (!firebaseReady) return;
+  const dk = todayKey(); const day = dayDecoupeAgg(allDecoupe, dk);
+  if (!day.rows.length) return;
+  const rows = day.rows.slice().sort((a,b)=>(a.magasin+a.fromage+a.heure).localeCompare(b.magasin+b.fromage+b.heure,"fr"));
+  const hash = djHash(JSON.stringify(rows));
+  const ref = db.ref(`decoupe_jour/${dk}/data`);
+  const cur = (await withTimeout(ref.child("hash").once("value"), 15000)).val();
+  if (cur === hash) return;
+  await ref.set({ dateKey:dk, date:new Date().toLocaleDateString("fr-FR"), hash, updatedAt:Date.now(), rows,
+    sessions:day.sessions.map(se=>({ id:se.id, entity:se.entity||"", bl:se.docNumber||"", fournisseur:se.supplier||"" })),
+    totals:{ kbgN:day.kbgN, kbgTheo:day.kbgTheo, kbgG:day.kbgG, kbgMontreuilG:day.kbgMontreuilG, robN:day.robN, robG:day.robG, robMeules:day.robMeules, rendPortions:day.rendPortions } });
+}
 function dayDecoupeAgg(allDecoupe, dateKey) {
-  const kbgMap = {}, robMap = {}; const sessions = [];
+  const kbgMap = {}, robMap = {}; const sessions = []; const rows = []; // v5.22 : lignes détaillées (mail auto + CSV par magasin)
   let kbgN=0,kbgG=0,kbgTheo=0,kbgMontreuilG=0, robMeules=0,robN=0,robG=0;
   Object.entries(allDecoupe||{}).forEach(([sid,s]) => {
     if (!s || !s.meta || !s.meta.startedAt) return;
@@ -3678,10 +3696,16 @@ function dayDecoupeAgg(allDecoupe, dateKey) {
     if ((t.lines||[]).length===0 && !(t.kbgN||t.robN||t.robMeules)) return; // session vide → ignorée
     const ent = ((s.recap&&s.recap.entity)||s.meta.entity||"").toUpperCase();
     const routeRob = ent==="ROB" ? true : (ent==="KBG" ? false : null); // null = session sans entité → on route au fromage
-    sessions.push({ id:sid, entity:ent, supplier:s.meta.supplier||"", docNumber:s.meta.docNumber||"", by:(s.recap&&s.recap.by)||s.meta.createdBy||"" });
+    const sInfo = { id:sid, entity:ent, supplier:s.meta.supplier||"", docNumber:s.meta.docNumber||"", by:(s.recap&&s.recap.by)||s.meta.createdBy||"", libre:!!s.meta.libre };
+    sessions.push(sInfo);
     (t.lines||[]).forEach(l => {
       const key = stripAccents((l.designation||"").toLowerCase()).replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"") || (l.article||l.designation||"?");
       const isRob = routeRob!=null ? routeRob : (((l.kbgN||0)===0) && (((l.robN||0)>0) || ((l.robMeules||0)>0)));
+      rows.push({ magasin:isRob?"ROB":"KBG", fromage:l.designation||"", heure:(l.cutAt?new Date(l.cutAt).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}):""),
+        fournisseur:sInfo.supplier, bl:sInfo.docNumber, libre:sInfo.libre, par:djSafeBy(sInfo.by),
+        portions:isRob?0:(l.kbgN||0), theo:isRob?0:(l.theo||0), rend:(!isRob&&l.rend!=null)?l.rend:null,
+        poidsG:Math.round(isRob?(l.robG||0):(l.kbgG||0)), horsGabaritG:isRob?0:Math.round(l.robG||0), poidsRecuKg:Number(l.poidsRecu)||0,
+        meules:isRob?Math.round((l.robMeules||0)*100)/100:0, unite:l.robUnit||"meule", morceaux:isRob?(l.robN||0):0 });
       if (isRob) {
         const m = robMap[key] || (robMap[key] = { designation:l.designation||"", robMeules:0, robN:0, robG:0, robUnit:l.robUnit||"meule" });
         m.robMeules += (l.robMeules||0); m.robN += (l.robN||0); m.robG += (l.robG||0);
@@ -3696,7 +3720,7 @@ function dayDecoupeAgg(allDecoupe, dateKey) {
   const kbgLines = Object.values(kbgMap).map(m=>({ ...m, rend:(m.theo>0?Math.round(m.kbgN/m.theo*100):null) })).sort((a,b)=>a.designation.localeCompare(b.designation,"fr"));
   const robLines = Object.values(robMap).sort((a,b)=>a.designation.localeCompare(b.designation,"fr"));
   const rendPortions = kbgTheo>0 ? Math.round(kbgN/kbgTheo*100) : null;
-  return { sessions, kbgLines, robLines, kbgN, kbgG:Math.round(kbgG), kbgTheo, kbgMontreuilG:Math.round(kbgMontreuilG), rendPortions,
+  return { sessions, rows, kbgLines, robLines, kbgN, kbgG:Math.round(kbgG), kbgTheo, kbgMontreuilG:Math.round(kbgMontreuilG), rendPortions,
            robMeules:Math.round(robMeules*100)/100, robN, robG:Math.round(robG),
            hasKbg:kbgLines.length>0, hasRob:robLines.length>0 };
 }
@@ -4485,25 +4509,19 @@ function DecoupeRecap({ sessionId, operator, supplier, entity, products, state, 
   const kgRob = day.robG>0 ? Math.round(day.robG/1000*10)/10 : 0;
   const rp = day.rendPortions; const bravoP = rp!=null ? rp>=FROMAGE_RENDEMENT_OK : true;
   const nbSessions = day.sessions.length;
-  const alreadySent = day.sessions.some(se=>{ const s=(allDecoupe||{})[se.id]; return s && s.recap && s.recap.daySentAt; });
+  // v5.22 — état du mail automatique (decoupe_jour/<jour>) : envoyé par l'Apps Script « MailDecoupe ».
+  const [dj, setDj] = useState(null);
+  useEffect(() => { if (!firebaseReady) return; const ref=db.ref(`decoupe_jour/${dateKey}`); const h=(sn)=>setDj(sn.val()||{}); ref.on("value",h); return ()=>ref.off("value",h); }, [dateKey]);
+  const mailInfo = (dj && dj.mail) || null;
+  const mailAJour = !!(mailInfo && dj.data && mailInfo.hash === dj.data.hash);
   const send = async () => {
     setSending(true); setError("");
-    const kbgOut = day.kbgLines.map(l=>({ entity:"KBG", designation:l.designation, kbgN:l.kbgN, kbgTheo:l.theo||0, rend:(l.rend!=null?l.rend:null), kbgG:Math.round(l.kbgG||0), robG:Math.round(l.montreuilG||0), poidsRecu:Math.round(l.poidsRecu||0) }));
-    const robOut = day.robLines.map(l=>({ entity:"ROB", designation:l.designation, robMeules:Math.round((l.robMeules||0)*100)/100, robN:l.robN||0, robG:Math.round(l.robG||0), robUnit:l.robUnit||"meule" }));
-    const payload = { action:"log-decoupe-recap", sessionId, journee:true, date:dateStr, dateKey, at:new Date().toISOString(),
-      operator:safeName(operator.name), operatorCode:operator.code, brand:BRAND,
-      mailTo:DECOUPE_MAIL, subject:`Découpe du jour — ${dateStr}`,
-      subjectKbg:`Découpe Kelbongoo du ${dateStr}`, subjectRob:`Découpe Montreuil du ${dateStr}`,
-      nbSessions, rendementPortions:(day.rendPortions!=null?day.rendPortions:null),
-      totals:{ kbgN:day.kbgN, kbgTheo:day.kbgTheo, kbgG:day.kbgG, kbgMontreuilG:day.kbgMontreuilG, robN:day.robN, robG:day.robG, robMeules:day.robMeules },
-      lines:[...kbgOut, ...robOut] };
     try {
-      await fetch(APPS_SCRIPT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) });
-      // Marque toutes les sessions du jour comme « récap envoyé » (info pour la console).
-      if (firebaseReady) day.sessions.forEach(se=>{ db.ref(`decoupe/${se.id}/recap`).update({ daySentAt:Date.now(), daySentBy:operator.name||("#"+operator.code) }).catch(()=>{}); });
+      await publishDecoupeJour(allDecoupe);
+      await db.ref(`decoupe_jour/${dateKey}`).update({ sendNow:Date.now(), sendNowBy:djSafeBy(operator.name), finishedAt:Date.now() });
       if (bravoP && day.hasKbg) { try{ launchConfetti(); }catch(e){} }
       setSent(true);
-    } catch(e){ setError(e.message); } finally { setSending(false); }
+    } catch(e){ setError("Pas de connexion : réessaie quand la tablette a du réseau. ("+e.message+")"); } finally { setSending(false); }
   };
   return (
     <div className="app">
@@ -4555,11 +4573,17 @@ function DecoupeRecap({ sessionId, operator, supplier, entity, products, state, 
           </div>
         </div>
         <div className="recap-card">
-          <h3>📤 Clôturer la journée & envoyer le récap</h3>
-          <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Un <b>seul</b> envoi pour toute la journée (les {nbSessions} découpe(s) du jour, Kelbongoo + Montreuil) vers <b>{DECOUPE_MAIL}</b> et le suivi de la console. À faire une fois que <b>toutes</b> les découpes du jour sont terminées.</p>
-          {alreadySent && !sent && <div style={{padding:10, background:"#fff3e0", borderRadius:8, color:"#e65100", fontSize:13, marginBottom:8}}>⚠️ Un récap a déjà été envoyé aujourd'hui. Renvoyer met simplement le suivi à jour.</div>}
-          {!sent && <button className="btn-primary" onClick={send} disabled={sending||(!day.hasKbg&&!day.hasRob)} style={{background:"#8a5a00"}}>{sending?"Envoi…":`📤 Clôturer & envoyer le récap du jour`}</button>}
-          {sent && <div style={{padding:12, background:"#e8f5e9", borderRadius:8, color:"#1a4d2e", fontWeight:600, textAlign:"center"}}>✓ Récap de la journée envoyé !</div>}
+          <h3>📧 Mail automatique à {DECOUPE_MAIL}</h3>
+          <p style={{fontSize:12, color:"#666", margin:"0 0 10px"}}>Le récap part <b>tout seul</b> environ <b>10 min après « Terminer »</b> (si plus rien n'est découpé), sinon à 20h30. Un bloc par magasin (🔵 Kelbongoo / 🟣 Montreuil) + <b>un fichier CSV par magasin</b>. Si tu redécoupes ensuite, une mise à jour repart automatiquement.</p>
+          {mailInfo && mailInfo.sentAt ? (
+            <div style={{padding:10, background:mailAJour?"#e8f5e9":"#fff3e0", borderRadius:8, color:mailAJour?"#1a4d2e":"#e65100", fontSize:13, marginBottom:8, fontWeight:600}}>
+              {mailAJour ? "✓" : "⏳"} Mail envoyé à {new Date(mailInfo.sentAt).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}{mailInfo.count>1?` (envoi n°${mailInfo.count})`:""}{mailAJour?"":" — de nouvelles découpes partiront dans la mise à jour"}
+            </div>
+          ) : (
+            <div style={{padding:10, background:"#fff8e1", borderRadius:8, color:"#8a5a00", fontSize:13, marginBottom:8}}>⏳ {dj && dj.finishedAt ? "Journée terminée — le mail part dans quelques minutes." : "Le mail partira après « Terminer »."}</div>
+          )}
+          {!sent && <button className="btn-secondary" onClick={send} disabled={sending||(!day.hasKbg&&!day.hasRob)} style={{background:"#8a5a00", color:"#fff", fontWeight:600}}>{sending?"…":"📤 J'ai fini — envoyer le mail maintenant"}</button>}
+          {sent && <div style={{padding:12, background:"#e8f5e9", borderRadius:8, color:"#1a4d2e", fontWeight:600, textAlign:"center"}}>✓ Demandé — le mail part dans les 5 minutes.</div>}
           {error && <div style={{padding:12, background:"#ffebee", borderRadius:8, color:"#c62828", fontSize:13, marginTop:8}}>{error}</div>}
         </div>
         <div className="recap-card"><button className="btn-secondary" onClick={onLeave} style={{background:"#8a5a00", color:"#fff", fontWeight:600}}>← Quitter et revenir</button></div>
@@ -5605,6 +5629,12 @@ function App() {
 
   const allSessions = useAllSessions();
   const allDecoupe = useAllDecoupe();
+  // v5.22 — récap du jour publié automatiquement (4 s après la dernière modif) pour le mail rr@.
+  useEffect(() => {
+    if (!firebaseReady) return;
+    const t = setTimeout(()=>{ publishDecoupeJour(allDecoupe).catch(()=>{}); }, 4000);
+    return () => clearTimeout(t);
+  }, [allDecoupe]);
   const allVin = useInventaireVin();
   const allPicking = useAllPicking();
   const [pickingId, setPickingId] = useState(""); // picking ouvert (module Dispatch & Picking)
@@ -5729,7 +5759,10 @@ function App() {
     const m = (s && s.meta) || decLocalMeta(sid);
     setDecSessionId(sid); setDecSupplier(m.supplier||supLabel); setDecProducts(m.products||[]); setDecEntity(m.entity||ent); setModule("decoupe"); setDecView("decoupe");
   };
-  const handleDecoupeFinish = (state, pk) => { setDecRecapData({ state, products:pk }); setDecView("recap"); };
+  const handleDecoupeFinish = (state, pk) => {
+    if (firebaseReady) db.ref(`decoupe_jour/${todayKey()}`).update({ finishedAt:Date.now(), finishedBy:djSafeBy(opName) }).catch(()=>{});
+    setDecRecapData({ state, products:pk }); setDecView("recap");
+  };
   const handleDecoupeLeave = () => { setDecSessionId(""); setDecSupplier(""); setDecProducts([]); setDecEntity(""); setDecRecapData(null); setDecView("home"); };
 
   /* ---- INVENTAIRE VIN ---- */
