@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.24";
+const APP_VERSION = "v5.24.1";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -3742,6 +3742,47 @@ function SuiviPalettesScreen({ onBack }) {
   );
 }
 
+function ArtExpress() {
+  return (
+    <svg viewBox="0 0 120 104" width="100%" height="104" aria-hidden="true">
+      {/* 2 colis + 1 bouteille posés à la main */}
+      <rect x="22" y="24" width="30" height="24" rx="2" fill="#d9a066" stroke="#a9743a" strokeWidth="1.5"/>
+      <rect x="54" y="30" width="24" height="18" rx="2" fill="#e0ac72" stroke="#a9743a" strokeWidth="1.5"/>
+      <line x1="37" y1="24" x2="37" y2="48" stroke="#a9743a" strokeWidth="1"/>
+      <rect x="81" y="24" width="9" height="24" rx="3" fill="#6b8e23" stroke="#4a6418" strokeWidth="1.2"/>
+      <rect x="83.5" y="17" width="4" height="8" rx="1" fill="#4a6418"/>
+      <g fill="#c98a3a" stroke="#8a5a1e" strokeWidth="1">
+        <rect x="14" y="52" width="92" height="8"/><rect x="14" y="70" width="92" height="8"/>
+        <rect x="16" y="60" width="12" height="10"/><rect x="54" y="60" width="12" height="10"/><rect x="92" y="60" width="12" height="10"/>
+      </g>
+      {/* pastille éclair */}
+      <circle cx="105" cy="15" r="13" fill="#6a1b9a"/>
+      <path d="M107 5 L99 17 L104 17 L102 26 L111 13 L106 13 Z" fill="#ffd54f"/>
+    </svg>
+  );
+}
+function ArtSuivi() {
+  return (
+    <svg viewBox="0 0 120 104" width="100%" height="104" aria-hidden="true">
+      {/* camion */}
+      <rect x="8" y="30" width="58" height="34" rx="3" fill="#eceff1" stroke="#607d8b" strokeWidth="1.5"/>
+      <path d="M66 40 L84 40 L94 52 L94 64 L66 64 Z" fill="#90a4ae" stroke="#607d8b" strokeWidth="1.5"/>
+      <rect x="71" y="44" width="11" height="8" rx="1" fill="#e3f2fd"/>
+      <rect x="16" y="44" width="18" height="6" fill="#c98a3a" stroke="#8a5a1e" strokeWidth="1"/>
+      <rect x="38" y="44" width="18" height="6" fill="#c98a3a" stroke="#8a5a1e" strokeWidth="1"/>
+      <rect x="19" y="36" width="12" height="8" fill="#d9a066" stroke="#a9743a" strokeWidth="1"/>
+      <rect x="41" y="36" width="12" height="8" fill="#d9a066" stroke="#a9743a" strokeWidth="1"/>
+      <circle cx="24" cy="66" r="7" fill="#37474f"/><circle cx="24" cy="66" r="3" fill="#b0bec5"/>
+      <circle cx="80" cy="66" r="7" fill="#37474f"/><circle cx="80" cy="66" r="3" fill="#b0bec5"/>
+      {/* coche « récupéré » */}
+      <circle cx="100" cy="24" r="15" fill="#2e7d32"/>
+      <path d="M92 24 L98 30 L109 18" fill="none" stroke="#fff" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>
+      {/* comptage */}
+      <rect x="10" y="80" width="100" height="16" rx="8" fill="#efebe9"/>
+      <rect x="10" y="80" width="64" height="16" rx="8" fill="#8d6e63"/>
+    </svg>
+  );
+}
 function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
   return (
     <div className="land">
@@ -3764,20 +3805,23 @@ function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
           <div className="mt-sub">Compter les vins à l'entrepôt (bouteilles &amp; cartons)</div>
         </div>
         <div className="mod-tile" style={{borderTop:"4px solid #6a1b9a"}} onClick={()=>onPick("express")}>
-          <div className="mt-art" style={{fontSize:64}}>⚡🟫</div>
-          <div className="mt-name">Ajout express palette / dolly</div>
-          <div className="mt-sub">Hors process (ex. demande par message) · contenu, destination → enlèvement Rungis ou ⚡ FAST DELIVERY</div>
+          <div className="mt-art"><ArtExpress/></div>
+          <div className="mt-name">Ajout express</div>
+          <div className="mt-sub">Palette ou dolly hors process → Rungis ou ⚡ FAST</div>
         </div>
-        <div className="mod-tile" style={{borderTop:"4px solid #5d4037", gridColumn:"1 / -1"}} onClick={()=>onPick("suivi")}>
-          <div className="mt-name">🟫 Suivi palettes</div>
-          <div className="mt-sub">Quand le chauffeur Rungis a pris les palettes à PDP · palettes EPAL récupérées en magasin, par jour et par lieu</div>
+        <div className="mod-tile" style={{borderTop:"4px solid #5d4037", gridColumn:"1 / -1", flexDirection:"row", textAlign:"left", gap:14}} onClick={()=>onPick("suivi")}>
+          <div className="mt-art" style={{width:120, flex:"0 0 120px"}}><ArtSuivi/></div>
+          <div style={{flex:1, minWidth:0}}>
+            <div className="mt-name">Suivi palettes</div>
+            <div className="mt-sub" style={{marginTop:4}}>Ce que le chauffeur Rungis a récupéré, quand et où · palettes EPAL par magasin</div>
+          </div>
         </div>
       </div>
       <div className="land-foot">
         {operator && <span style={{fontSize:13, color:"#555", alignSelf:"center"}}>Connecté : <b>{operator.name||"Opérateur"}</b></span>}
         {operator && onLogout && <button onClick={onLogout} style={{color:"#c62828"}}>↪ Se déconnecter</button>}
         <button onClick={onResetCache}>🔄 Réinitialiser (cache)</button>
-        <button onClick={()=>onPick("admin")} style={{fontSize:11, padding:"6px 10px"}}>🔐 Accès admin</button>
+        <a onClick={()=>onPick("admin")} style={{fontSize:12, color:"#999", textDecoration:"underline", cursor:"pointer", alignSelf:"center"}}>Accès admin</a>
         {!firebaseReady && <span className="admin-note">⚠️ Firebase non disponible — mode local.</span>}
       </div>
     </div>
