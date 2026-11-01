@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.22";
+const APP_VERSION = "v5.24";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -1719,7 +1719,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const reqs = useEnlevementsEnCours(allPicking);
   const legacyReqs = reqs.filter(isLegacyEnl);
   const wantType = mode==="D" ? "DISPATCH" : "PICKING";
-  const reqByCode = useMemo(() => { const m = {}; reqs.filter(r=>!isLegacyEnl(r)).forEach(r => (enlItems(r)||[]).forEach((it,i) => { if (it.type!==wantType) return; (m[it.code] = m[it.code] || []).push({ r, it, i }); })); return m; }, [reqs, wantType]);
+  const reqByCode = useMemo(() => { const m = {}; reqs.filter(r=>!isLegacyEnl(r)).forEach(r => (enlItems(r)||[]).forEach((it,i) => { if (it.type!==wantType || it.express) return; (m[it.code] = m[it.code] || []).push({ r, it, i }); })); return m; }, [reqs, wantType]);
   const DEF = { on:false, n:1, frais:false, merge:"", cond:"pal", zone:"", epalN:null }; // v5.21 — epalN null = toutes EPAL
   const g = (k) => ({ ...DEF, ...(sel[k]||{}) });
   const upd = (k, patch) => setSel(s => ({ ...s, [k]: { ...DEF, ...(s[k]||{}), ...patch } }));
@@ -3346,6 +3346,402 @@ function ArtAdmin() {
     </svg>
   );
 }
+/* =========================================================================
+   v5.23 — ⚡ AJOUT EXPRESS PALETTE / DOLLY (hors process)
+   Palette montée « à la main » (ex. 3 cartons d'huile d'olive demandés par message) : on décrit vite le contenu,
+   la destination, l'emplacement → demande d'enlèvement Rungis (mail 23h59) OU ⚡ FAST DELIVERY aujourd'hui.
+   Même format que les demandes Dispatch/Picking (Firebase enlevements/<id>, items[].lines {s,d,q} = le BL),
+   item.express = true, type "DISPATCH" (aucun changement nécessaire côté Console / Kelbongoo / BL).
+   ========================================================================= */
+const EXP_UNITS = [["carton","cartons"],["bouteille","bouteilles"],["unité","unités"],["colis","colis"],["bidon","bidons"],["sac","sacs"],["kg","kg"]];
+const EXP_UNIT_RX = /^(cartons?|ctns?|cts?|bouteilles?|btl?s?|bt|unit[eé]s?|u|pi[eè]ces?|pcs?|colis|bidons?|sacs?|kgs?|kilos?)\b\.?\s*/i;
+function expUnitOf(w){ const x=String(w||"").toLowerCase();
+  if (/^c(ar)?t/.test(x)) return "carton"; if (/^b(ou)?t|^btl/.test(x)) return "bouteille"; if (/^bid/.test(x)) return "bidon"; if (/^sac/.test(x)) return "sac";
+  if (/^k/.test(x)) return "kg"; if (/^colis/.test(x)) return "colis"; return "unité"; }
+// « 3 cartons d'huile d'olive » · « huile olive x3 » · « 2 btl vinaigre » → { q, u, d }
+function expParseLine(t){
+  let s = String(t||"").replace(/^[\s•\-–*·>]+/,"").trim(); if (!s) return null;
+  let q = 0, u = "";
+  let m = s.match(/^(\d+(?:[.,]\d+)?)\s*(?:x\s*)?/i);
+  if (m) { q = Number(m[1].replace(",", ".")); s = s.slice(m[0].length); }
+  else { m = s.match(/\s*(?:[x×:]\s*|-\s*)(\d+(?:[.,]\d+)?)\s*([a-zéè]*)\.?\s*$/i); if (m) { q = Number(m[1].replace(",", ".")); s = s.slice(0, m.index); if (m[2]) { const um = (m[2]+" ").match(EXP_UNIT_RX); if (um) u = expUnitOf(m[2]); } } }
+  const um = s.match(EXP_UNIT_RX); if (um) { u = expUnitOf(um[1]); s = s.slice(um[0].length); }
+  s = s.replace(/^(de |d'|d’|des |du )/i, "").trim();
+  if (!s) return null;
+  return { q: q || 1, u: u || "carton", d: s.charAt(0).toUpperCase() + s.slice(1) };
+}
+const expLineTxt = (l) => { const pl = Number(l.q) > 1; const U = EXP_UNITS.find(x=>x[0]===l.u) || [l.u, l.u]; return l.u==="unité" ? l.d : `${l.d} (${pl ? U[1] : U[0]})`; };
+const expNewColis = () => ({ id: "c"+Date.now().toString(36)+Math.random().toString(36).slice(2,5), fmt:"pal", n:1, autre:false, code:"", zone:"", frais:false, photo:"", lines:[], note:"" });
+function expSuggest(){ try { return JSON.parse(localStorage.getItem("exp_designations")||"[]"); } catch(e){ return []; } }
+function expRemember(ds){ try { const o = expSuggest(); ds.forEach(d => { const i=o.indexOf(d); if (i>=0) o.splice(i,1); o.unshift(d); }); localStorage.setItem("exp_designations", JSON.stringify(o.slice(0,80))); } catch(e){} }
+
+function ExpressScreen({ operator, onBack }) {
+  const opBy = safeName(operator && operator.name);
+  const myKey = useOwnerKey(operator);
+  const dateKey = todayKey();
+  const [colis, setColis] = useState(() => [expNewColis()]);
+  const [cur, setCur] = useState(0);
+  const [txt, setTxt] = useState("");            // ligne rapide (« 3 cartons huile d'olive »)
+  const [paste, setPaste] = useState(false);     // coller un message entier
+  const [pasteTxt, setPasteTxt] = useState("");
+  const [sending, setSending] = useState(false);
+  const [fastAsk, setFastAsk] = useState(null);  // null | { id? } → demande d'initiales
+  const [ini, setIni] = useState("");
+  const reqs = useEnlevementsEnCours({});
+  const myExpress = reqs.filter(r => r.express && r.date===dateKey);
+  const sugg = useMemo(expSuggest, [sending]);
+  const C = colis[cur] || colis[0];
+  const updC = (patch) => setColis(cs => cs.map((c,i) => i===cur ? { ...c, ...patch } : c));
+  const addLines = (ls) => { if (!ls.length) return; updC({ lines:[ ...C.lines, ...ls ] }); };
+  const addTxt = () => { const l = expParseLine(txt); if (!l) return; addLines([l]); setTxt(""); };
+  const addPaste = () => { const ls = String(pasteTxt).split(/\n|;/).map(expParseLine).filter(Boolean); addLines(ls); setPasteTxt(""); setPaste(false); };
+  const setLine = (i, patch) => updC({ lines: C.lines.map((l,j) => j===i ? { ...l, ...patch } : l) });
+  const delLine = (i) => updC({ lines: C.lines.filter((_,j) => j!==i) });
+  const STORES = ["ROB","TOL","BIC", ...Object.keys(STORE_LONG).filter(c => !["ROB","TOL","BIC","PDP"].includes(c))];
+  const big = { minHeight:52, borderRadius:12, fontWeight:900, fontSize:16 };
+  const chip = (on, col) => ({ padding:"10px 14px", borderRadius:12, border:"3px solid "+col, background:on?col:"#fff", color:on?"#fff":col, fontWeight:900, fontSize:16, minHeight:48 });
+  const fmtTxt = (c) => c.fmt==="dolly" ? `${c.n} dolly` : `${c.n} palette${c.n>1?"s":""}${c.autre?" (autre format)":" EPAL"}`;
+  const problems = (c, i) => { const p = []; if (!c.code) p.push("destination"); if (!c.lines.length) p.push("contenu"); if (!c.zone) p.push("emplacement"); return p.length ? `Colis ${i+1} : ${p.join(", ")}` : ""; };
+
+  const build = () => {
+    const id = "enl_" + Date.now();
+    const items = colis.map((c, i) => {
+      const lines = c.lines.map(l => ({ s:"Express hors process", d:expLineTxt(l), q:Number(l.q)||0 }));
+      const total = lines.reduce((a,l)=>a+l.q,0); const pal = c.fmt==="pal" ? c.n : 0;
+      return { key:"X:"+id+"_"+i, code:c.code, type:"DISPATCH", express:true, ref:"", n:pal, epalN:c.autre?0:pal, epal:pal>0 && !c.autre, dollies:c.fmt==="dolly"?c.n:0,
+        kbg:false, frais:!!c.frais, zone:c.zone, mergedWith:"", origin:c.code, sid:"", total, sups:[{ name:"✍️ Express hors process", qty:total }],
+        hasPhoto:!!c.photo, lines, note:c.note ? c.note.trim().slice(0,300) : "" };
+    });
+    const codes = [...new Set(items.map(x=>x.code))];
+    const lieux = codes.map(code => ({ code, dolly:0, dollyZone:"", pal:items.filter(x=>x.code===code).reduce((a,x)=>a+x.n,0), dollies:items.filter(x=>x.code===code).reduce((a,x)=>a+x.dollies,0) }));
+    const payload = { action:"request-enlevement", id, mode:"X", by:opBy, byKey:myKey, date:dateKey, at:Date.now(), brand:BRAND, photoGeneral:"", express:true,
+      lieux: codes.map(code => ({ code, label:storeLong(code), color:siteColor(code), dolly:0, dollyZone:"froid",
+        palettes: colis.map((c,i)=>({ c, it:items[i] })).filter(x=>x.it.code===code).map(({c,it}) => ({ key:it.key, type:"DISPATCH", express:true, ref:"", n:it.n, epalN:it.epalN, dollies:it.dollies, kbg:false, cond:c.fmt==="dolly"?"dolly":"pal",
+          frais:it.frais, zone:it.zone, mergedWith:"", sup:it.sups, lines:it.lines, total:it.total, origin:code, note:it.note, photo:c.photo||"" })) })) };
+    const rec = { at:Date.now(), by:opBy, byKey:myKey, mode:"X", express:true, date:dateKey, totPal:items.reduce((a,x)=>a+x.n,0), totDol:items.reduce((a,x)=>a+x.dollies,0),
+      totDolDispatch:items.reduce((a,x)=>a+x.dollies,0), totFromage:0, status:"attente-23h59", items, lieux };
+    return { id, items, payload, rec };
+  };
+  const post = (body) => fetch(ENLEVEMENT_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(body) }).then(r=>r.json());
+
+  // fast = initiales (string) → ⚡ FAST DELIVERY aujourd'hui ; sinon demande normale (mail 23h59)
+  const send = async (fast) => {
+    const pb = colis.map(problems).filter(Boolean);
+    if (pb.length) { alert("Il manque :\n\n• " + pb.join("\n• ")); return; }
+    const noPh = colis.filter(c=>!c.photo).length;
+    const { id, items, payload, rec } = build();
+    const recap = colis.map((c,i) => `📍 ${c.code} · ${fmtTxt(c)} · ${ZONES[c.zone].short}${c.frais?" ❄️":""}\n` + c.lines.map(l=>`   • ${l.q} × ${expLineTxt(l)}`).join("\n")).join("\n");
+    if (!fast && !confirm(`Demande d'enlèvement EXPRESS ?\n\n${recap}${noPh?`\n\n📷 ${noPh} sans photo (conseillé pour le chauffeur)`:""}\n\n📨 Mail automatique à Rungis à 23h59.`)) return;
+    setSending(true);
+    try {
+      if (!firebaseReady) throw new Error("connexion indisponible — réessaie dans un instant");
+      await db.ref("enlevements/"+id).set(rec);
+      expRemember(colis.flatMap(c => c.lines.map(l => l.d)));
+      if (fast) {
+        // photos d'abord (le mail Rungis FAST les reprend), puis validation immédiate
+        try { await post(payload); } catch(_) {}
+        const j = await post({ action:"fast-delivery", id, ini:fast, by:opBy });
+        if (!j || !j.ok) throw new Error("FAST DELIVERY refusé : " + ((j && j.error) || "réponse invalide") + "\n\nLa demande reste enregistrée (mail Rungis à 23h59).");
+        launchCelebration("⚡ FAST DELIVERY validé !", `${(j.lieux||[]).join(", ")} · récupération aujourd'hui · Rungis prévenu · BL partis · sur l'écran du chauffeur`);
+      } else {
+        try { fetch(ENLEVEMENT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) }).catch(()=>{}); } catch(_) {}
+        launchCelebration("Demande express enregistrée ! 🚛", `${items.length} colis · mail à Rungis à 23h59`);
+      }
+      setColis([expNewColis()]); setCur(0); setFastAsk(null); setIni("");
+    } catch(e) { alert("Erreur : " + e.message); }
+    setSending(false);
+  };
+  const fastExisting = async (r, initials) => {
+    setSending(true);
+    try { const j = await post({ action:"fast-delivery", id:r.id, ini:initials, by:opBy });
+      if (!j || !j.ok) throw new Error((j && j.error) || "réponse invalide");
+      launchCelebration("⚡ FAST DELIVERY validé !", `${(j.lieux||[]).join(", ")} · récupération aujourd'hui`); setFastAsk(null); setIni("");
+    } catch(e) { alert("FAST DELIVERY refusé : " + e.message); }
+    setSending(false);
+  };
+  const okIni = /^[A-Za-zÀ-ÿ]{2,4}$/.test(ini.trim());
+  const col = C.code ? siteColor(C.code) : "#6a1b9a";
+
+  return (
+    <div className="app">
+      <div className="header" style={{background:"linear-gradient(135deg,#6a1b9a,#ab47bc)"}}><div className="header-row"><div>
+        <h1>⚡ Ajout express</h1>
+        <div className="sub">Palette / dolly hors process · {fmtDateKey(dateKey)} · {opBy}</div></div>
+        <div className="header-actions"><button className="header-btn" onClick={onBack}>← Retour</button></div></div></div>
+      <div style={{padding:12, paddingBottom:170}}>
+        {/* onglets colis */}
+        <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:10}}>
+          {colis.map((c,i) => <button key={c.id} onClick={()=>setCur(i)} style={{ ...chip(i===cur, c.code?siteColor(c.code):"#6a1b9a"), fontSize:14 }}>{c.fmt==="dolly"?"🛒":"🟫"} {i+1}{c.code?" · "+c.code:""}{c.lines.length?` (${c.lines.length})`:""}</button>)}
+          <button onClick={()=>{ setColis(cs=>[...cs, { ...expNewColis(), code:C.code, zone:C.zone }]); setCur(colis.length); }} style={{ ...chip(false,"#6a1b9a"), fontSize:14 }}>＋ Autre palette / dolly</button>
+        </div>
+
+        <div style={{border:"3px solid "+col, borderRadius:16, padding:12, background:"#fff"}}>
+          {/* 1. format */}
+          <div style={{fontWeight:900, fontSize:15, marginBottom:6}}>1 · Quoi ?</div>
+          <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center"}}>
+            <button onClick={()=>updC({fmt:"pal"})} style={chip(C.fmt==="pal","#6d4c41")}>🟫 Palette</button>
+            <button onClick={()=>updC({fmt:"dolly"})} style={chip(C.fmt==="dolly","#33691e")}>🛒 Dolly</button>
+            <span style={{display:"inline-flex", alignItems:"center", gap:6, marginLeft:4}}>
+              <button onClick={()=>updC({n:Math.max(1,C.n-1)})} style={{width:44,height:44,borderRadius:12,border:"2px solid #999",background:"#fff",fontSize:24,fontWeight:900}}>−</button>
+              <b style={{minWidth:30, textAlign:"center", fontSize:26}}>{C.n}</b>
+              <button onClick={()=>updC({n:C.n+1})} style={{width:44,height:44,borderRadius:12,border:"none",background:"#6a1b9a",color:"#fff",fontSize:24,fontWeight:900}}>+</button></span>
+            {C.fmt==="pal" && <label style={{fontSize:14, fontWeight:800, display:"inline-flex", alignItems:"center", gap:6}}><input type="checkbox" checked={C.autre} onChange={e=>updC({autre:e.target.checked})} style={{width:22,height:22}}/>autre format (pas EPAL)</label>}
+          </div>
+
+          {/* 2. destination */}
+          <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>2 · Pour quel magasin ?</div>
+          <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
+            {STORES.map(c => <button key={c} onClick={()=>updC({code:c})} style={{ ...chip(C.code===c, siteColor(c)), padding:"8px 12px", fontSize:15 }}>{c}</button>)}
+          </div>
+          {C.code && <div style={{fontSize:13, fontWeight:800, color:col, marginTop:4}}>→ {storeLong(C.code)}</div>}
+
+          {/* 3. contenu */}
+          <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>3 · Qu'est-ce qu'il y a dedans ? <span style={{fontWeight:600, fontSize:12, color:"#777"}}>(c'est la liste du BL magasin)</span></div>
+          <div style={{display:"flex", gap:6}}>
+            <input value={txt} onChange={e=>setTxt(e.target.value)} onKeyDown={e=>{ if (e.key==="Enter") addTxt(); }} list="exp-sugg"
+              placeholder="ex. 3 cartons huile d'olive 75cl" style={{flex:1, minWidth:0, fontSize:18, padding:"10px 12px", borderRadius:12, border:"3px solid "+(txt?col:"#ccc")}} />
+            <button onClick={addTxt} disabled={!txt.trim()} style={{ ...big, padding:"0 16px", border:"none", background:txt.trim()?col:"#bdbdbd", color:"#fff" }}>＋</button>
+          </div>
+          <datalist id="exp-sugg">{sugg.map(d => <option key={d} value={d} />)}</datalist>
+          <div style={{display:"flex", gap:8, marginTop:6, flexWrap:"wrap"}}>
+            <button onClick={()=>setPaste(v=>!v)} style={{padding:"8px 12px", borderRadius:10, border:"2px solid #6a1b9a", background:paste?"#f3e5f5":"#fff", color:"#6a1b9a", fontWeight:800, fontSize:13}}>📋 Coller le message (une ligne = un produit)</button>
+          </div>
+          {paste && <div style={{marginTop:6}}>
+            <textarea value={pasteTxt} onChange={e=>setPasteTxt(e.target.value)} rows={5} placeholder={"3 cartons huile d'olive\n6 bouteilles vinaigre balsamique\nriz basmati x2"} style={{width:"100%", fontSize:16, padding:10, borderRadius:12, border:"2px solid #6a1b9a", boxSizing:"border-box"}} />
+            <button onClick={addPaste} disabled={!pasteTxt.trim()} style={{ ...big, width:"100%", marginTop:6, border:"none", background:"#6a1b9a", color:"#fff" }}>Ajouter {String(pasteTxt).split(/\n|;/).map(expParseLine).filter(Boolean).length} ligne(s)</button></div>}
+          {C.lines.length>0 && <div style={{marginTop:8, border:"2px solid #eee", borderRadius:12}}>
+            {C.lines.map((l,i) => (
+              <div key={i} style={{display:"flex", alignItems:"center", gap:6, padding:"6px 8px", borderTop:i?"1px solid #eee":"none", flexWrap:"wrap"}}>
+                <input value={l.d} onChange={e=>setLine(i,{d:e.target.value})} style={{flex:"1 1 100%", minWidth:0, fontSize:16, fontWeight:700, border:"2px solid #ddd", borderRadius:8, padding:"6px 8px", boxSizing:"border-box"}} />
+                <button onClick={()=>setLine(i,{q:Math.max(1,(Number(l.q)||1)-1)})} style={{width:38,height:38,borderRadius:10,border:"2px solid #999",background:"#fff",fontSize:20,fontWeight:900}}>−</button>
+                <input value={l.q} inputMode="decimal" onChange={e=>setLine(i,{q:e.target.value.replace(/[^\d.,]/g,"").replace(",",".")})} style={{width:52, fontSize:20, fontWeight:900, textAlign:"center", border:"2px solid #ddd", borderRadius:8, padding:4}} />
+                <button onClick={()=>setLine(i,{q:(Number(l.q)||0)+1})} style={{width:38,height:38,borderRadius:10,border:"none",background:col,color:"#fff",fontSize:20,fontWeight:900}}>+</button>
+                <select value={l.u} onChange={e=>setLine(i,{u:e.target.value})} style={{fontSize:15, fontWeight:800, padding:"6px 4px", borderRadius:8, border:"2px solid #ddd"}}>{EXP_UNITS.map(u=><option key={u[0]} value={u[0]}>{Number(l.q)>1?u[1]:u[0]}</option>)}</select>
+                <span style={{flex:1}} />
+                <button onClick={()=>delLine(i)} style={{width:38,height:38,borderRadius:10,border:"2px solid #c62828",background:"#fff",color:"#c62828",fontSize:18,fontWeight:900}}>✕</button>
+              </div>))}
+          </div>}
+
+          {/* 4. emplacement + photo */}
+          <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>4 · Où est-elle à PDP ?</div>
+          <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center"}}>
+            {Object.keys(ZONES).map(z => <button key={z} onClick={()=>updC({zone:z})} style={chip(C.zone===z, ZONES[z].col)}>{ZONES[z].txt}</button>)}
+            <button onClick={()=>updC({frais:!C.frais})} style={chip(C.frais,"#0277bd")}>❄️ Frais</button>
+          </div>
+          <div style={{display:"flex", gap:8, alignItems:"center", marginTop:10, flexWrap:"wrap"}}>
+            <input id={"exp_ph_"+C.id} type="file" accept="image/*" capture="environment" style={{display:"none"}}
+              onChange={async e => { const f=e.target.files&&e.target.files[0]; e.target.value=""; if(!f) return; try { const d=await compressPhoto(f,1000,0.7); updC({photo:d}); } catch(err){ alert("Photo : "+err.message); } }} />
+            {C.photo && <img src={C.photo} alt="" style={{width:56,height:56,objectFit:"cover",borderRadius:8,border:"3px solid #2e7d32"}} />}
+            <button onClick={()=>document.getElementById("exp_ph_"+C.id).click()} style={{padding:"10px 14px", borderRadius:10, fontWeight:800, fontSize:14, border:"2px solid "+(C.photo?"#2e7d32":"#e65100"), background:C.photo?"#e8f5e9":"#fff", color:C.photo?"#2e7d32":"#e65100"}}>📷 {C.photo?"Reprendre la photo":"Photo de la palette"}</button>
+            <input value={C.note} onChange={e=>updC({note:e.target.value})} placeholder="ℹ️ Info chauffeur (facultatif)" style={{flex:"1 1 160px", minWidth:0, fontSize:15, padding:"10px", borderRadius:10, border:"2px solid #ddd"}} />
+          </div>
+          {colis.length>1 && <button onClick={()=>{ if(!confirm("Supprimer ce colis ?")) return; setColis(cs=>cs.filter((_,i)=>i!==cur)); setCur(0); }} style={{marginTop:10, padding:"8px 12px", borderRadius:10, border:"2px solid #c62828", background:"#fff", color:"#c62828", fontWeight:800}}>🗑️ Supprimer ce colis</button>}
+        </div>
+
+        {/* demandes express du jour en attente */}
+        {myExpress.length>0 && <div style={{marginTop:14, border:"2px solid #6a1b9a", borderRadius:14, padding:10, background:"#faf5fc"}}>
+          <div style={{fontWeight:900, fontSize:15, color:"#6a1b9a", marginBottom:6}}>⏳ Express du jour en attente de Rungis</div>
+          {myExpress.map(r => { const its = enlItems(r)||[];
+            return <div key={r.id} style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", padding:"6px 0", borderTop:"1px solid #e1bee7"}}>
+              <span style={{flex:"1 1 200px", fontSize:14, fontWeight:700}}>{fmtTime(r.at)} · {safeName(r.by)} · {its.map(x=>`${x.code} ${x.dollies?x.dollies+" dolly":x.n+" pal."}`).join(" · ")} · {r.status==="envoye"?"📨 envoyé à Rungis":"⏳ part à 23h59"}</span>
+              <button disabled={sending} onClick={()=>setFastAsk({ r })} style={{padding:"8px 12px", borderRadius:10, border:"none", background:"#c62828", color:"#fff", fontWeight:900}}>⚡ FAST aujourd'hui</button>
+            </div>; })}
+        </div>}
+      </div>
+
+      {/* barre d'envoi */}
+      <div style={{position:"fixed", left:0, right:0, bottom:0, background:"#fff", borderTop:"3px solid #6a1b9a", padding:10, display:"flex", gap:8, zIndex:20}}>
+        <button disabled={sending} onClick={()=>send("")} style={{ ...big, flex:1, border:"none", background:"#e65100", color:"#fff", fontSize:15 }}>{sending?"…":"🚛 Demande Rungis (mail 23h59)"}</button>
+        <button disabled={sending} onClick={()=>{ const pb=colis.map(problems).filter(Boolean); if (pb.length) { alert("Il manque :\n\n• "+pb.join("\n• ")); return; } setFastAsk({}); }} style={{ ...big, flex:1, border:"none", background:"#c62828", color:"#fff", fontSize:15 }}>⚡ FAST DELIVERY aujourd'hui</button>
+      </div>
+
+      {fastAsk && <div onClick={()=>!sending && setFastAsk(null)} style={{position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:50, display:"flex", alignItems:"center", justifyContent:"center", padding:14}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"#fff", borderRadius:18, padding:16, maxWidth:460, width:"100%"}}>
+          <div style={{fontSize:22, fontWeight:900, color:"#c62828"}}>⚡ FAST DELIVERY aujourd'hui</div>
+          <div style={{fontSize:14, marginTop:6}}>Récupération <b>aujourd'hui</b> sans attendre la validation de Rungis. Rungis reçoit un mail (palettes + destinations), les BL partent aux magasins, c'est direct sur l'écran du chauffeur.</div>
+          <div style={{marginTop:8, border:"2px solid #eee", borderRadius:10, padding:8, fontSize:15, fontWeight:800}}>
+            {(fastAsk.r ? (enlItems(fastAsk.r)||[]).map(x=>({ code:x.code, t:x.dollies?x.dollies+" dolly":x.n+" palette(s)" })) : colis.map(c=>({ code:c.code, t:fmtTxt(c) }))).map((x,i) =>
+              <div key={i}><span style={{display:"inline-block", minWidth:44, textAlign:"center", background:siteColor(x.code), color:"#fff", borderRadius:6, padding:"1px 6px", marginRight:8}}>{x.code}</span>{x.t}</div>)}
+          </div>
+          <div style={{fontSize:15, fontWeight:900, marginTop:10}}>Tes initiales</div>
+          <input autoFocus value={ini} maxLength={4} onChange={e=>setIni(e.target.value.replace(/[^A-Za-zÀ-ÿ]/g,"").toUpperCase())} placeholder="ex. HG"
+            style={{width:"100%", boxSizing:"border-box", fontSize:26, fontWeight:900, letterSpacing:4, textAlign:"center", padding:10, borderRadius:12, border:"3px solid "+(okIni?"#c62828":"#ddd"), marginTop:4}} />
+          <button disabled={sending || !okIni} onClick={()=> fastAsk.r ? fastExisting(fastAsk.r, ini.trim().toUpperCase()) : send(ini.trim().toUpperCase())}
+            style={{ ...big, width:"100%", marginTop:10, border:"none", background:okIni?"#c62828":"#bdbdbd", color:"#fff", fontSize:18, minHeight:58 }}>{sending?"Validation…":"✅ Valider le FAST DELIVERY"}</button>
+          <button disabled={sending} onClick={()=>setFastAsk(null)} style={{ ...big, width:"100%", marginTop:8, border:"2px solid #ddd", background:"#fff" }}>Annuler</button>
+        </div></div>}
+    </div>
+  );
+}
+
+/* =========================================================================
+   v5.24 — 🟫 SUIVI PALETTES (lecture seule)
+   • 🚚 Départs PDP : chaque palette / dolly des demandes d'enlèvement, avec la date et l'heure où le chauffeur Rungis
+     l'a prise à PDP (appli Kelbongoo › chauffeur › ✅ pris / ❌ pas pris → enlevements/<id>/picked/<clé>, Kelbongoo V10.79),
+     comptage par jour et par lieu.
+   • 🟫 Palettes EPAL : palettes vides récupérées en boutique par le chauffeur (appli Kelbongoo › 🟫 Retour palettes EPAL →
+     epal/mvts type retour), date par date et par magasin, + ce que chaque magasin doit encore.
+   ========================================================================= */
+const SV_MOTIFS = { place:"🚛 Pas de place", introuvable:"🔍 Introuvable", pas_prete:"⏳ Pas prête", autre:"✏️ Autre" };
+const svKey = (k) => String(k||"").replace(/[\/#\[\]\.$]/g, "_").slice(0, 140);
+const svIso = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; };
+const svDay = (iso) => { if (!iso) return "—"; const [y,m,d] = String(iso).split("-"); const dt = new Date(+y, +m-1, +d);
+  const t = todayKey(); const hier = svIso(Date.now()-86400000);
+  return iso===t ? "Aujourd'hui" : iso===hier ? "Hier" : dt.toLocaleDateString("fr-FR", { weekday:"short", day:"numeric", month:"short" }); };
+const svHm = (ts) => ts ? new Date(ts).toLocaleTimeString("fr-FR", { hour:"2-digit", minute:"2-digit" }) : "";
+const svFrToIso = (s) => { const m = String(s||"").match(/^(\d{2})\/(\d{2})\/(\d{4})$/); return m ? `${m[3]}-${m[2]}-${m[1]}` : String(s||""); };
+function svEpalBalance(mv, code) {
+  const deb = []; let cred = 0, sent = 0, back = 0, adj = 0;
+  Object.keys(mv||{}).forEach(k => { const m = mv[k]; if (!m || m.cancelled || String(m.code||"").toUpperCase()!==code || String(m.day||"") < "2026-10-22") return;
+    const n = Math.round(Number(m.n)||0); if (!n) return;
+    if (m.type==="envoi") { sent += n; deb.push({ day:m.day, at:m.at||0, n }); }
+    else if (m.type==="retour") { back += n; cred += n; }
+    else if (m.type==="ajust") { adj += n; if (n>0) deb.push({ day:m.day, at:m.at||0, n }); else cred += -n; } });
+  deb.sort((a,b) => a.day<b.day?-1:a.day>b.day?1:a.at-b.at);
+  let rest = cred, since = ""; for (const d of deb) { if (rest >= d.n) { rest -= d.n; continue; } since = d.day; break; }
+  const due = sent + adj - back; return { sent, back, adj, due, since: due>0 ? since : "" };
+}
+// Toutes les palettes / dollys des demandes → une ligne chacune, avec son état chauffeur
+function svPalettes(enl) {
+  const out = [];
+  Object.entries(enl||{}).forEach(([id, r]) => {
+    if (!r || r.status==="annule") return;
+    const items = Array.isArray(r.items) ? r.items : (r.items && typeof r.items==="object" ? Object.values(r.items) : []);
+    const picked = r.picked || {}, refused = r.refused || {};
+    const base = { rid:id, st:r.status, fast:r.fast||null, pickup:r.pickup||"", liv:r.livraison||{}, reqDay:r.date||svIso(r.at||Date.now()), at:r.at||0, by:r.by||"" };
+    items.forEach((it, i) => { if (!it || it.kbg) return; const n = Number(it.n)||0, dol = Number(it.dollies)||0; if (!n && !dol && !it.mergedWith) return;
+      const k = svKey(it.key || ("i"+i));
+      out.push({ ...base, k:id+"|"+k, code:String(it.code||"?").toUpperCase(), n, dol, fro:0,
+        what: it.express ? "✍️ Express" : it.type==="PICKING" ? "🛒 Picking"+(it.ref?" cde "+it.ref:"") : "🚚 Dispatch",
+        merged: !n && !dol ? it.mergedWith : "", zone:it.zone||"", pk:picked[k]||null, ref:refused[k]||null }); });
+    (Array.isArray(r.lieux) ? r.lieux : []).forEach(L => { if (!L || !L.code || !(Number(L.dolly)>0)) return; const c = String(L.code).toUpperCase(); const k = "dolly_"+c;
+      out.push({ ...base, k:id+"|"+k, code:c, n:0, dol:0, fro:Number(L.dolly)||0, what:"🧀 Dolly fromage", merged:"", zone:"froid", pk:picked[k]||null, ref:null }); });
+  });
+  return out.map(p => {
+    let etat, col, day;
+    if (p.pk && p.pk.status==="ok") { etat = `🚚 Prise par le chauffeur ${svDay(svIso(p.pk.at))} ${svHm(p.pk.at)}${p.pk.by?" · "+p.pk.by:""}`; col = "#2e7d32"; day = svIso(p.pk.at); }
+    else if (p.pk && p.pk.status==="missed") { etat = `❌ Pas prise — ${SV_MOTIFS[p.pk.motif]||p.pk.motif||""}${p.pk.by?" · "+p.pk.by:""}`; col = "#c62828"; day = svIso(p.pk.at); }
+    else if (p.ref) { etat = `❌ Refusée par Rungis — ${SV_MOTIFS[p.ref.motif]||p.ref.motif||""}`; col = "#c62828"; day = p.pickup || p.reqDay; }
+    else if (p.st==="valide") { etat = `${p.fast?"⚡ FAST · ":""}⏳ À prendre ${svDay(p.pickup)} — pas encore pointée par le chauffeur`; col = "#e65100"; day = p.pickup || p.reqDay; }
+    else if (p.st==="envoye") { etat = "📨 Envoyée à Rungis — en attente de validation"; col = "#1565c0"; day = p.reqDay; }
+    else { etat = "🕘 Demande enregistrée — part au mail de 23h59"; col = "#757575"; day = p.reqDay; }
+    return { ...p, etat, col, day, ok: !!(p.pk && p.pk.status==="ok") };
+  });
+}
+const svQty = (p) => p.fro ? `${p.fro} dolly fromage` : p.dol ? `${p.dol} dolly` : p.n ? `${p.n} pal.` : `🔗 avec ${p.merged}`;
+
+function SuiviPalettesScreen({ onBack }) {
+  const [tab, setTab] = useState(() => { try { return localStorage.getItem("sv_tab")==="epal" ? "epal" : "pdp"; } catch(e) { return "pdp"; } });
+  const setTabK = (t) => { setTab(t); try { localStorage.setItem("sv_tab", t); } catch(e){} };
+  const [days, setDays] = useState(7);
+  const [enl, setEnl] = useState(undefined);
+  const [mv, setMv] = useState(undefined);
+  const [fStore, setFStore] = useState("");
+  const [open, setOpen] = useState({});
+  useEffect(() => {
+    if (!firebaseReady) { setEnl({}); setMv({}); return; }
+    const r1 = db.ref("enlevements").orderByChild("at").startAt(Date.now() - 35*86400000);
+    const h1 = (s) => setEnl(s.val()||{}); r1.on("value", h1);
+    const r2 = db.ref("epal/mvts"); const h2 = (s) => setMv(s.val()||{}); r2.on("value", h2);
+    return () => { r1.off("value", h1); r2.off("value", h2); };
+  }, []);
+  const from = svIso(Date.now() - (days-1)*86400000);
+  const pals = useMemo(() => svPalettes(enl).filter(p => p.day >= from && (!fStore || p.code===fStore)), [enl, from, fStore]);
+  const stores = useMemo(() => { const s = [...new Set(svPalettes(enl).map(p=>p.code))]; return ["ROB","TOL","BIC", ...s.filter(c=>!["ROB","TOL","BIC"].includes(c)).sort()]; }, [enl]);
+  const byDay = useMemo(() => { const o = {}; pals.forEach(p => { (o[p.day] = o[p.day] || []).push(p); }); return Object.keys(o).sort().reverse().map(d => ({ d, list:o[d].sort((a,b)=>a.code.localeCompare(b.code)) })); }, [pals]);
+  const sumOf = (list) => list.reduce((a,p) => { if (!p.ok) return a; a.pal += p.n; a.dol += p.dol + p.fro; return a; }, { pal:0, dol:0 });
+  const waiting = pals.filter(p => !p.ok && !(p.pk && p.pk.status==="missed") && !p.ref);
+  const tot = sumOf(pals);
+  // EPAL : retours chauffeur par jour × magasin
+  const epalDays = useMemo(() => { const o = {};
+    Object.values(mv||{}).forEach(m => { if (!m || m.cancelled || !m.day || m.day < from) return; const c = String(m.code||"").toUpperCase(); if (fStore && c!==fStore) return;
+      const x = o[m.day] = o[m.day] || { ret:{}, env:{}, by:new Set(), last:0 }; const n = Math.round(Number(m.n)||0);
+      if (m.type==="retour") { x.ret[c] = (x.ret[c]||0) + n; if (m.by) x.by.add(m.by); x.last = Math.max(x.last, m.at||0); }
+      else if (m.type==="envoi") x.env[c] = (x.env[c]||0) + n; });
+    return Object.keys(o).sort().reverse().map(d => ({ d, ...o[d] })); }, [mv, from, fStore]);
+  const ES = fStore ? [fStore] : EPAL_STORES;
+  const chipS = (c, big) => <span style={{display:"inline-block", minWidth:big?52:42, textAlign:"center", background:siteColor(c), color:"#fff", borderRadius:8, padding:big?"3px 10px":"1px 6px", fontWeight:900, fontSize:big?18:14}}>{c}</span>;
+  const btn = (on, col) => ({ padding:"10px 12px", borderRadius:12, border:"3px solid "+col, background:on?col:"#fff", color:on?"#fff":col, fontWeight:900, fontSize:15, minHeight:46 });
+  const loading = enl===undefined || mv===undefined;
+
+  return (
+    <div className="app">
+      <div className="header" style={{background:"linear-gradient(135deg,#4e342e,#8d6e63)"}}><div className="header-row"><div>
+        <h1>🟫 Suivi palettes</h1>
+        <div className="sub">Ce que le chauffeur Rungis a récupéré, où et quand (appli Kelbongoo)</div></div>
+        <div className="header-actions"><button className="header-btn" onClick={onBack}>← Retour</button></div></div></div>
+      <div style={{padding:12, paddingBottom:60}}>
+        <div style={{display:"flex", gap:8, marginBottom:10}}>
+          <button onClick={()=>setTabK("pdp")} style={{ ...btn(tab==="pdp","#e65100"), flex:1 }}>🚚 Départs PDP</button>
+          <button onClick={()=>setTabK("epal")} style={{ ...btn(tab==="epal","#5d4037"), flex:1 }}>🟫 Palettes EPAL</button>
+        </div>
+        <div style={{display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", marginBottom:10}}>
+          {[1,7,14,30].map(n => <button key={n} onClick={()=>setDays(n)} style={{ ...btn(days===n,"#455a64"), padding:"6px 10px", minHeight:38, fontSize:13 }}>{n===1?"Aujourd'hui":n+" j"}</button>)}
+          <span style={{flex:1}} />
+          <select value={fStore} onChange={e=>setFStore(e.target.value)} style={{fontSize:15, fontWeight:800, padding:"8px", borderRadius:10, border:"2px solid #ccc"}}>
+            <option value="">Tous les lieux</option>{stores.map(c => <option key={c} value={c}>{c} · {storeLong(c)}</option>)}</select>
+        </div>
+        {loading && <div className="pal-empty">Chargement…</div>}
+
+        {!loading && tab==="pdp" && <>
+          <div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, marginBottom:12}}>
+            {[[tot.pal,"palettes prises","#2e7d32"],[tot.dol,"dollys pris","#33691e"],[waiting.length,"pas encore prises","#e65100"]].map(([v,l,c]) =>
+              <div key={l} style={{border:"3px solid "+c, borderRadius:14, textAlign:"center", padding:"8px 4px", background:"#fff"}}><div style={{fontSize:30, fontWeight:900, color:c, lineHeight:1}}>{v}</div><div style={{fontSize:12, fontWeight:800, color:"#444", marginTop:2}}>{l}</div></div>)}
+          </div>
+          {!byDay.length && <div className="pal-empty">Aucune palette sur la période.</div>}
+          {byDay.map(({ d, list }) => { const s = sumOf(list); const bySt = {};
+            list.forEach(p => { const x = bySt[p.code] = bySt[p.code] || { pal:0, dol:0, tot:0, ok:0 }; x.tot++; if (p.ok) { x.ok++; x.pal += p.n; x.dol += p.dol + p.fro; } });
+            const isOpen = open[d] != null ? open[d] : (byDay[0] && byDay[0].d===d);
+            return (
+              <div key={d} style={{border:"2px solid #ddd", borderRadius:14, background:"#fff", marginBottom:10, overflow:"hidden"}}>
+                <button onClick={()=>setOpen(o=>({ ...o, [d]:!isOpen }))} style={{width:"100%", display:"flex", alignItems:"center", gap:8, padding:"10px 12px", border:"none", background:"#fafafa", textAlign:"left", cursor:"pointer"}}>
+                  <span style={{flex:1}}><b style={{fontSize:17, textTransform:"capitalize"}}>{svDay(d)}</b> <span style={{fontSize:12, color:"#777"}}>{d.split("-").reverse().join("/")}</span>
+                    <span style={{display:"block", fontSize:13, fontWeight:800, color:"#2e7d32"}}>🚚 {s.pal} pal.{s.dol?` + ${s.dol} dolly`:""} prises</span></span>
+                  <span style={{display:"flex", gap:4, flexWrap:"wrap", justifyContent:"flex-end"}}>{Object.keys(bySt).sort().map(c => <span key={c} style={{fontSize:13, fontWeight:900, whiteSpace:"nowrap"}}>{chipS(c)} {bySt[c].ok}/{bySt[c].tot}</span>)}</span>
+                  <span style={{fontSize:20}}>{isOpen?"▴":"▾"}</span>
+                </button>
+                {isOpen && <div>{list.map(p => (
+                  <div key={p.k} style={{display:"flex", gap:8, alignItems:"center", padding:"8px 12px", borderTop:"1px solid #eee", borderLeft:"6px solid "+p.col}}>
+                    {chipS(p.code)}
+                    <div style={{flex:1, minWidth:0}}>
+                      <div style={{fontSize:15, fontWeight:800}}>{p.what} · {svQty(p)}{p.zone&&ZONES[p.zone]?<span style={{fontWeight:600, color:"#777"}}> · {ZONES[p.zone].short}</span>:null}</div>
+                      <div style={{fontSize:13, fontWeight:800, color:p.col}}>{p.etat}</div>
+                      {p.ok && p.liv[p.code] && <div style={{fontSize:12, color:"#1565c0", fontWeight:700}}>🏪 livraison {svDay(svFrToIso(p.liv[p.code]))}</div>}
+                    </div>
+                  </div>))}</div>}
+              </div>); })}
+          <div style={{fontSize:12, color:"#777", marginTop:6}}>« Prise » = le chauffeur a appuyé sur ✅ dans l'appli Kelbongoo (Kelbongoo V10.79 ou plus). Les palettes « via Kelbongoo » ne sont pas comptées.</div>
+        </>}
+
+        {!loading && tab==="epal" && <>
+          <div style={{display:"grid", gridTemplateColumns:`repeat(${ES.length},1fr)`, gap:8, marginBottom:12}}>
+            {ES.filter(c=>EPAL_STORES.includes(c)).map(c => { const b = svEpalBalance(mv, c); const due = Math.max(0, b.due);
+              return <div key={c} style={{border:"3px solid "+siteColor(c), borderRadius:14, padding:"8px", background:"#fff", textAlign:"center"}}>
+                {chipS(c, true)}
+                <div style={{fontSize:32, fontWeight:900, color:due?"#c62828":"#2e7d32", lineHeight:1.1, marginTop:4}}>{due}</div>
+                <div style={{fontSize:12, fontWeight:800}}>EPAL à rendre</div>
+                <div style={{fontSize:11, color:"#666"}}>{due ? (b.since ? "depuis le "+b.since.split("-").reverse().join("/") : "") : "rien à rendre 👌"}</div>
+                <div style={{fontSize:11, color:"#666"}}>envoyées {b.sent} · rendues {b.back}</div></div>; })}
+          </div>
+          <div style={{border:"2px solid #ddd", borderRadius:14, background:"#fff", overflow:"hidden"}}>
+            <div style={{padding:"10px 12px", fontWeight:900, fontSize:16, background:"#efebe9"}}>Palettes vides récupérées en magasin, jour par jour</div>
+            <table style={{width:"100%", borderCollapse:"collapse", fontSize:15}}>
+              <thead><tr style={{background:"#fafafa"}}><th style={{textAlign:"left", padding:"6px 10px"}}>Jour</th>{ES.map(c => <th key={c} style={{padding:6}}>{chipS(c)}</th>)}<th style={{padding:6}}>Total</th></tr></thead>
+              <tbody>{epalDays.length ? epalDays.map(x => { const t = ES.reduce((a,c)=>a+(x.ret[c]||0),0);
+                return <tr key={x.d} style={{borderTop:"1px solid #eee"}}>
+                  <td style={{padding:"6px 10px"}}><b style={{textTransform:"capitalize"}}>{svDay(x.d)}</b><div style={{fontSize:11, color:"#777"}}>{x.by.size?"🚚 "+[...x.by].join(", "):""}{x.last?" · "+svHm(x.last):""}</div></td>
+                  {ES.map(c => <td key={c} style={{textAlign:"center", padding:6}}><b style={{fontSize:18, color:x.ret[c]?"#2e7d32":"#bbb"}}>{x.ret[c]||"·"}</b>{x.env[c]?<div style={{fontSize:11, color:"#c62828"}}>+{x.env[c]} envoyées</div>:null}</td>)}
+                  <td style={{textAlign:"center", fontWeight:900}}>{t||"·"}</td></tr>; })
+                : <tr><td colSpan={ES.length+2} style={{padding:14, textAlign:"center", color:"#777"}}>Aucun mouvement sur la période.</td></tr>}</tbody>
+            </table>
+          </div>
+          <div style={{fontSize:12, color:"#777", marginTop:6}}>Chiffre vert = palettes EPAL vides récupérées par le chauffeur (appli Kelbongoo › 🟫 Retour palettes EPAL). En rouge : palettes EPAL parties vers le magasin ce jour-là (BL).</div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
 function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
   return (
     <div className="land">
@@ -3367,16 +3763,21 @@ function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
           <div className="mt-name">Inventaire vin</div>
           <div className="mt-sub">Compter les vins à l'entrepôt (bouteilles &amp; cartons)</div>
         </div>
-        <div className="mod-tile admin" onClick={()=>onPick("admin")}>
-          <div className="mt-art"><ArtAdmin/></div>
-          <div className="mt-name">Admin</div>
-          <div className="mt-sub">Chargement & console responsable</div>
+        <div className="mod-tile" style={{borderTop:"4px solid #6a1b9a"}} onClick={()=>onPick("express")}>
+          <div className="mt-art" style={{fontSize:64}}>⚡🟫</div>
+          <div className="mt-name">Ajout express palette / dolly</div>
+          <div className="mt-sub">Hors process (ex. demande par message) · contenu, destination → enlèvement Rungis ou ⚡ FAST DELIVERY</div>
+        </div>
+        <div className="mod-tile" style={{borderTop:"4px solid #5d4037", gridColumn:"1 / -1"}} onClick={()=>onPick("suivi")}>
+          <div className="mt-name">🟫 Suivi palettes</div>
+          <div className="mt-sub">Quand le chauffeur Rungis a pris les palettes à PDP · palettes EPAL récupérées en magasin, par jour et par lieu</div>
         </div>
       </div>
       <div className="land-foot">
         {operator && <span style={{fontSize:13, color:"#555", alignSelf:"center"}}>Connecté : <b>{operator.name||"Opérateur"}</b></span>}
         {operator && onLogout && <button onClick={onLogout} style={{color:"#c62828"}}>↪ Se déconnecter</button>}
         <button onClick={onResetCache}>🔄 Réinitialiser (cache)</button>
+        <button onClick={()=>onPick("admin")} style={{fontSize:11, padding:"6px 10px"}}>🔐 Accès admin</button>
         {!firebaseReady && <span className="admin-note">⚠️ Firebase non disponible — mode local.</span>}
       </div>
     </div>
@@ -5789,6 +6190,15 @@ function App() {
 
   // ===== LANDING =====
   if (module===null) return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} operator={operator} onLogout={logout} />;
+
+  // ===== v5.24 — 🟫 SUIVI PALETTES (lecture seule, sans code) =====
+  if (module==="suivi") return <SuiviPalettesScreen onBack={()=>setModule(null)} />;
+
+  // ===== v5.23 — ⚡ AJOUT EXPRESS PALETTE / DOLLY (hors process) =====
+  if (module==="express") {
+    if (!operator) return <CodeLoginScreen moduleLabel="Ajout express palette / dolly" moduleKey="dispatch" onLogin={(op)=>setOperator(op)} onBack={()=>setModule(null)} />;
+    return <ExpressScreen operator={opObj} onBack={()=>setModule(null)} />;
+  }
 
   // ===== ADMIN = accès à la CONSOLE DE CHARGEMENT (gestion) =====
   if (module==="admin") return <AdminConsoleScreen onBack={()=>setModule(null)} />;
