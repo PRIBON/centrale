@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.24.1";
+const APP_VERSION = "v5.27";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -742,7 +742,10 @@ const isAdminEmail = (email) => ADMIN_EMAILS.map(e=>e.toLowerCase()).includes((e
 const isFallbackAdmin = (name) => FALLBACK_ADMIN_NAMES.includes((name||"").toLowerCase().trim());
 
 // Noms longs des magasins pour les BL / palettes.
-const STORE_LONG = { ROB:"ROBESPIERRE", TOL:"TOLBIAC", PDP:"PORTE DE PANTIN", BIC:"BICHAT", BAR:"BARBES", BOR:"BORDEAUX", CES:"CESAR", CHA:"CHARONNE", FOR:"FORGE", LIL:"LILLE", NCA:"NATION A", NCC:"NATION C", PAD:"PADOUE", PDC:"PDC", ROM:"ROME", STB:"SAINT-BLAISE" };
+const STORE_LONG = { ROB:"ROBESPIERRE", TOL:"TOLBIAC", PDP:"PORTE DE PANTIN", BIC:"BICHAT", BAR:"BARBES", BOR:"BORREGO", CES:"CESAR", CHA:"CHARONNE", FOR:"FORGE", LIL:"LILLE", NCA:"NATION A", NCC:"NATION C", PAD:"PADOUE", PDC:"PLACE DE CLICHY", ROM:"ROME", STB:"SAINT-BLAISE" };
+// v5.26 — Rungis n'enlève QUE pour les boutiques. Jamais PDP (c'est l'entrepôt) ni les points camion.
+const RUNGIS_STORES = ["ROB","TOL","BIC","BOR","STB","PDC"];
+const isRungisStore = (c) => RUNGIS_STORES.includes(String(c||"").toUpperCase());
 const storeLong = (code, label) => STORE_LONG[code] || label || code;
 // v5.12 — 🎨 couleur par lieu (identique à la prépa de commande Kelbongoo) : lisible, pas d'erreur de destination.
 const SITE_COLORS = { BIC:'#FF1F8E', BOR:'#FF6D00', STB:'#00B060', PDP:'#7C3AED', TOL:'#0A84FF', ROB:'#E11D48', PDC:'#00A8B5',
@@ -1140,7 +1143,7 @@ function useFirebaseSession(sessionId, operatorName) {
   }, [sessionId, updateLocal]);
   const validateRow = useCallback((key, qtys) => {
     const patch = { done:true, doneBy:operatorName, doneAt:Date.now(), lockedBy:null, lockedAt:null, ...(qtys||{}) };
-    if (firebaseReady && sessionId) db.ref(`dispatch/${sessionId}/state/${key}`).update(patch); else updateLocal(key,patch);
+    if (firebaseReady && sessionId) { db.ref(`dispatch/${sessionId}/state/${key}`).update(patch); noteNameless(`dispatch/${sessionId}/state/${key}`, "doneBy", operatorName); } else updateLocal(key,patch);
   }, [sessionId, operatorName, updateLocal]);
   const undoRow = useCallback((key) => {
     const patch = { done:false, doneBy:null, doneAt:null, ecarts:null };
@@ -1407,6 +1410,7 @@ function useDecoupeSession(sessionId, operator) {
     setState(prevS=>{ const next={ ...prevS, [key]:{ ...(prevS[key]||{}), ...p2 } }; saveStateBackup(next); stateRef.current=next; return next; });
     ensureMeta();
     if (firebaseReady && sessionId) db.ref(`decoupe/${sessionId}/state/${key}`).update(p2).then(()=>{ const sm=serverMetaRef.current; if (sm && sm.startedAt) decMarkSynced(sessionId, ts); }).catch(()=>{});
+    if (firebaseReady && sessionId && p2.doneBy) noteNameless(`decoupe/${sessionId}/state/${key}`, "doneBy", p2.doneBy);
   }, [sessionId, saveStateBackup, ensureMeta]);
   // En-tête effectif : local (entité/BL choisis au démarrage) complété/écrasé par le serveur dès qu'il existe.
   const meta = useMemo(() => ({ ...decLocalMeta(sessionId), ...(serverMeta||{}) }), [serverMeta, sessionId]);
@@ -1460,7 +1464,8 @@ function CodeLoginScreen({ moduleLabel, moduleKey, onLogin, onBack }) {
     const res = await verifyCentraleCode(c, moduleKey);
     setBusy(false);
     if (!res.valid) { setError(res.reason==="module" ? "Ton code n'a pas accès à ce module." : "Code non reconnu. Vérifie auprès du gérant."); return; }
-    const name = res.name || (await resolveOperatorName(c)) || "";
+    let name = res.name || (await resolveOperatorName(c)) || "";
+    if (opIsNameless(name)) name = "";
     localStorage.setItem("centrale_op_code", c);
     localStorage.setItem("centrale_op_at", String(Date.now()));
     if (name) localStorage.setItem("centrale_op_name", name);
@@ -1580,6 +1585,42 @@ async function resolveOperatorName(code) {
     const j = await r.json(); return (j && j.ok && j.name) ? String(j.name).trim() : "";
   } catch(e) { return ""; }
 }
+// v5.25 — JAMAIS de ligne « Opérateur » / « #code » qui reste sans nom : si le nom n'est pas connu au moment
+//   d'écrire (serveur du registre injoignable à la connexion), la tablette note l'endroit écrit ; dès que le nom
+//   arrive (nouvel essai toutes les minutes), elle remplace « Opérateur » par Prénom Nom. Le code n'est jamais écrit.
+function opIsNameless(v){ v=String(v==null?"":v).trim(); return !v || /^op[ée]rateur$/i.test(v) || /^#\d+$/.test(v) || /^code\s*\d+/i.test(v); }
+function noteNameless(path, field, value){
+  if (!opIsNameless(value)) return;
+  try { const code = localStorage.getItem("centrale_op_code")||""; if (!code) return;
+    const a = JSON.parse(localStorage.getItem("centrale_nameless")||"[]"); a.push({ path, field, code, at:Date.now() });
+    localStorage.setItem("centrale_nameless", JSON.stringify(a.slice(-3000))); } catch(e){}
+}
+let __healing = false;
+async function healNameless(code, name){
+  if (__healing || !firebaseReady || !code || !name) return;
+  let a = []; try { a = JSON.parse(localStorage.getItem("centrale_nameless")||"[]"); } catch(e){ a = []; }
+  const mine = a.filter(x => x && x.code === code); if (!mine.length) return;
+  __healing = true;
+  try {
+    const up = {};
+    for (const x of mine) { const cur = (await withTimeout(db.ref(`${x.path}/${x.field}`).once("value"), 15000)).val(); if (opIsNameless(cur) && cur !== null) up[`${x.path}/${x.field}`] = name; }
+    if (Object.keys(up).length) await db.ref().update(up);
+    localStorage.setItem("centrale_nameless", JSON.stringify(a.filter(x => !(x && x.code === code))));
+  } catch(e) {} finally { __healing = false; }
+}
+// v5.26 — demandes d'enlèvement enregistrées « Opérateur » par CE code (byKey) → vrai nom
+let __healEnl = false;
+async function healEnlBy(code, name){
+  if (__healEnl || !firebaseReady || !code || !name) return;
+  __healEnl = true;
+  try {
+    const key = await ownerKeyOf(code); if (!key) return;
+    const o = (await withTimeout(db.ref("enlevements").orderByChild("at").startAt(Date.now() - 35*86400000).once("value"), 15000)).val() || {};
+    const up = {};
+    Object.entries(o).forEach(([id,x]) => { if (x && x.byKey===key && opIsNameless(x.by)) up[`enlevements/${id}/by`] = name; });
+    if (Object.keys(up).length) await db.ref().update(up);
+  } catch(e) {} finally { __healEnl = false; }
+}
 // Nettoyage : les versions 5.11–5.14 ont stocké le code dans Firebase → on le remplace par une clé chiffrée + le nom.
 let __enlMig = false;
 async function migrateEnlevementCodes(o, allPicking) {
@@ -1608,7 +1649,10 @@ function useEnlevementsEnCours(allPicking) {
     if (!firebaseReady) return;
     const ref = db.ref("enlevements").orderByChild("at").startAt(Date.now() - 10*86400000);
     const h = (snap) => { const o = snap.val()||{}; migrateEnlevementCodes(o, allPicking);
-      setV(Object.entries(o).map(([id,x])=>({id,...x})).filter(x => x && x.status!=="valide" && x.status!=="annule").sort((a,b)=>(b.at||0)-(a.at||0))); };
+      setV(Object.entries(o).map(([id,x])=>({id,...x})).filter(x => x && x.status!=="valide" && x.status!=="annule")
+        // v5.26 — demande d'un jour passé uniquement « via Kelbongoo » : rien à enlever pour Rungis → ne bloque plus l'écran
+        .filter(x => { const its = enlItems(x)||[]; return !(x.date && x.date < todayKey() && its.length && its.every(it => it && it.kbg)); })
+        .sort((a,b)=>(b.at||0)-(a.at||0))); };
     ref.on("value", h); return () => ref.off("value", h);
   }, []);
   return v;
@@ -1645,7 +1689,7 @@ async function libererAncienneDemande(r, allPicking) {
 }
 
 // Ligne DÉJÀ DEMANDÉE : surlignée fluo, cochée, au nom du demandeur ; seul lui peut décocher.
-function LockedEnlRow({ r, it, idx, myKey }) {
+function LockedEnlRow({ r, it, idx, myKey, onFast }) {
   const mine = isMineEnl(r, myKey); const sent = r.status==="envoye";
   const col = it.type==="PICKING" ? PICKING_COLOR : DISPATCH_COLOR;
   return (
@@ -1662,6 +1706,8 @@ function LockedEnlRow({ r, it, idx, myKey }) {
       {mine && !sent
         ? <button onClick={()=>retirerItemEnlevement(r, idx)} style={{marginTop:8, width:"100%", padding:10, borderRadius:10, background:"#fff", border:"2px solid #b71c1c", color:"#b71c1c", fontWeight:900, fontSize:14}}>☐ Décocher — retirer de ma demande</button>
         : <div style={{marginTop:6, fontSize:12, fontWeight:800, color:"#000"}}>{sent ? "📨 Déjà envoyé à Rungis — plus modifiable." : `🔒 Seul ${safeName(r.by)} peut décocher.`}</div>}
+      {onFast && !it.kbg && !r.fast && <button onClick={()=>onFast(r)} style={{marginTop:8, width:"100%", padding:10, borderRadius:10, background:"#c62828", border:"none", color:"#fff", fontWeight:900, fontSize:14}}>⚡ FAST DELIVERY aujourd'hui (sans attendre Rungis)</button>}
+      {r.fast && <div style={{marginTop:6, fontSize:12, fontWeight:900, color:"#c62828"}}>⚡ FAST DELIVERY validé ({r.fast.ini}) — récupération aujourd'hui</div>}
     </div>
   );
 }
@@ -1700,6 +1746,23 @@ function enlItemQty(it) {
   return "🔗 même palette que " + (it.mergedWith || "");
 }
 
+// v5.26 — fenêtres de confirmation DANS l'appli (les confirm()/alert() du navigateur sont bloqués sur certains
+//   téléphones / navigateurs intégrés → « on n'arrive pas à valider »).
+function useAsk(){
+  const [st, setSt] = useState(null);
+  const ask = (o) => new Promise(res => setSt({ ...o, res }));
+  const close = (v) => { const r = st && st.res; setSt(null); if (r) r(v); };
+  const el = st ? (
+    <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center", padding:14}}>
+      <div style={{background:"#fff", borderRadius:18, padding:16, maxWidth:480, width:"100%", maxHeight:"85vh", overflow:"auto"}}>
+        <div style={{fontSize:21, fontWeight:900, color:st.color||"#e65100"}}>{st.title}</div>
+        {st.text && <div style={{whiteSpace:"pre-wrap", fontSize:15, marginTop:8, lineHeight:1.35}}>{st.text}</div>}
+        <button type="button" onClick={()=>close(true)} style={{width:"100%", marginTop:14, padding:16, borderRadius:12, border:"none", background:st.color||"#e65100", color:"#fff", fontWeight:900, fontSize:18}}>{st.ok||"OK"}</button>
+        {st.cancel!==false && <button type="button" onClick={()=>close(false)} style={{width:"100%", marginTop:8, padding:14, borderRadius:12, border:"2px solid #ccc", background:"#fff", fontWeight:800, fontSize:16}}>{st.cancel||"Annuler"}</button>}
+      </div>
+    </div>) : null;
+  return [el, ask];
+}
 // v5.15 — Écran d'enlèvement en 2 onglets : 🚚 DISPATCH (1 personne) / 🛒 PICKING (1 personne).
 function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const dateKey = todayKey();
@@ -1714,12 +1777,15 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const [moves, setMoves] = useState({});
   const [photos, setPhotos] = useState({});    // v5.17 : UNE photo PAR PALETTE (dispatch et picking)
   const [sending, setSending] = useState(false);
+  const [askEl, ask] = useAsk();
+  const [fastAsk, setFastAsk] = useState(null);   // v5.27 — null | { r? } (r = demande déjà faite)
+  const [ini, setIni] = useState("");
   const opBy = safeName(operator && operator.name);
   const myKey = useOwnerKey(operator);
   const reqs = useEnlevementsEnCours(allPicking);
   const legacyReqs = reqs.filter(isLegacyEnl);
   const wantType = mode==="D" ? "DISPATCH" : "PICKING";
-  const reqByCode = useMemo(() => { const m = {}; reqs.filter(r=>!isLegacyEnl(r)).forEach(r => (enlItems(r)||[]).forEach((it,i) => { if (it.type!==wantType || it.express) return; (m[it.code] = m[it.code] || []).push({ r, it, i }); })); return m; }, [reqs, wantType]);
+  const reqByCode = useMemo(() => { const m = {}; reqs.filter(r=>!isLegacyEnl(r)).forEach(r => (enlItems(r)||[]).forEach((it,i) => { if (it.type!==wantType || it.express || !isRungisStore(it.code)) return; (m[it.code] = m[it.code] || []).push({ r, it, i }); })); return m; }, [reqs, wantType]);
   const DEF = { on:false, n:1, frais:false, merge:"", cond:"pal", zone:"", epalN:null }; // v5.21 — epalN null = toutes EPAL
   const g = (k) => ({ ...DEF, ...(sel[k]||{}) });
   const upd = (k, patch) => setSel(s => ({ ...s, [k]: { ...DEF, ...(s[k]||{}), ...patch } }));
@@ -1727,6 +1793,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const allRows = useMemo(() => {
     const r = [];
     base.forEach(L => {
+      if (!isRungisStore(L.code)) return;   // v5.26 — PDP / points camion : pas d'enlèvement Rungis
       if (L.dispatch) r.push({ k:"D:"+L.code, kind:"D", origin:L.code, sups:L.dispatch.sup, lines:L.dispatch.lines, total:L.dispatch.total });
       L.pickings.forEach(pk => r.push({ k:"P:"+pk.sid, kind:"P", origin:L.code, sid:pk.sid, ref:pk.orderNum, status:pk.status, sups:pk.sup, lines:pk.lines, total:pk.total }));
     });
@@ -1849,7 +1916,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
             <span style={{fontSize:13, fontWeight:900, color:"#555"}}>📍 Lieu :</span>
             <select value={dest(r)} onChange={e=>{ const v=e.target.value; setMoves(m=>{ const n={...m}; if (v===r.origin) delete n[r.k]; else n[r.k]=v; return n; }); upd(r.k,{merge:""}); }}
               style={{padding:"8px", borderRadius:10, border:"2px solid "+siteCol, fontWeight:900, color:siteCol, background:"#fff", fontSize:14}}>
-              {Object.keys(STORE_LONG).map(c => <option key={c} value={c}>{c} · {STORE_LONG[c]}</option>)}
+              {RUNGIS_STORES.map(c => <option key={c} value={c}>{c} · {STORE_LONG[c]}</option>)}
             </select>
             {moved && <span style={{fontSize:12, fontWeight:900, color:"#c62828", background:"#fdecea", borderRadius:6, padding:"3px 8px"}}>⚠️ déplacé de {r.origin} → {dest(r)}</span>}
           </div>
@@ -1875,17 +1942,19 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const clean = (B) => B.map(L=>({ ...L, palettes:L.palettes.map(({sid,...p})=>p) }));
   const chipTxt = (L) => { const x=sumL(L); return [x.pal?x.pal+" pal.":"", x.dol?x.dol+" dolly":"", L.dolly?L.dolly+" 🧀":"", x.kbg?"📦 KBG":""].filter(Boolean).join(" + ") || "—"; };
 
-  const send = async () => {
+  const postJ = (body) => fetch(ENLEVEMENT_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(body) }).then(r=>r.json());
+  // v5.27 — fast = initiales → ⚡ FAST DELIVERY aujourd'hui (sinon demande normale, mail 23h59)
+  const send = async (fast) => {
     if (!built.length) return;
     // v5.17 — emplacement obligatoire, photo par palette conseillée
     const noZone = []; const noPhoto = [];
     built.forEach(L => L.palettes.forEach(p => { if (p.kbg || p.mergedWith) return;
       const nm = `${L.code} · ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+(p.ref||"—")}`;
       if (!p.zone) noZone.push(nm); if (!p.photo) noPhoto.push(nm); }));
-    if (noZone.length) { alert("📍 Indique où est la palette (❄️ chambre froide ou ▣ entrepôt sec) pour :\n\n• " + noZone.join("\n• ")); return; }
-    if (noPhoto.length && !confirm(`📷 ${noPhoto.length} palette(s) sans photo :\n\n• ${noPhoto.join("\n• ")}\n\nLa photo aide le chauffeur à trouver la palette.\nOK = enregistrer quand même · Annuler = prendre les photos`)) return;
+    if (noZone.length) { await ask({ title:"📍 Où est la palette ?", text:"Indique ❄️ chambre froide ou ▣ entrepôt sec pour :\n\n• " + noZone.join("\n• "), ok:"Compris", cancel:false }); return; }
+    if (noPhoto.length && !(await ask({ title:`📷 ${noPhoto.length} palette(s) sans photo`, text:`• ${noPhoto.join("\n• ")}\n\nLa photo aide le chauffeur à trouver la palette.`, ok:"Enregistrer quand même", cancel:"Prendre les photos" }))) return;
     const recap = built.map(L => `📍 ${L.code} : ${chipTxt(L)}\n`+L.palettes.map(p=>`   • ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref} → ${p.kbg?"via Kelbongoo (pas compté)":p.dollies?p.dollies+" dolly(s)":p.n?p.n+" pal.":"fusionné ("+p.mergedWith+")"}${p.n?(p.epalN<p.n?" · ⚠️ "+(p.n-p.epalN)+" autre format":" · EPAL"):""}${p.zone?" · "+ZONES[p.zone].short:""}${p.frais?" ❄️":""}${p.photo?" 📷":""}${p.origin!==L.code?" (déplacé de "+p.origin+")":""}`).join("\n")).join("\n");
-    if (!confirm(`Enregistrer la demande d'enlèvement ${mode==="D"?"DISPATCH":"PICKING"} ?\n\n${recap}\n\nTOTAL : ${totPal} palette(s)${totDolD?` + ${totDolD} dolly(s)`:""}${totFro?` + ${totFro} dolly(s) fromage`:""}\n📨 Mail automatique à Rungis à 23h59.`)) return;
+    if (!fast && !(await ask({ title:`Enregistrer la demande ${mode==="D"?"DISPATCH":"PICKING"} ?`, text:`${recap}\n\nTOTAL : ${totPal} palette(s)${totDolD?` + ${totDolD} dolly(s)`:""}${totFro?` + ${totFro} dolly(s) fromage`:""}\n📨 Mail automatique à Rungis à 23h59.`, ok:"✅ Enregistrer la demande" }))) return;
     setSending(true);
     const id = "enl_" + Date.now();
     const payload = { action:"request-enlevement", id, mode, by:opBy, byKey:myKey, date:dateKey, at:Date.now(), brand:BRAND, photoGeneral:"", lieux:clean(built) };
@@ -1907,13 +1976,32 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
       }));
       Object.entries(dispClose).forEach(([c, ts]) => { up[`palettes/${dateKey}/${c}/closes`] = [ ...(((closes[c]||{}).closes)||[]), ts ]; });
       await db.ref().update(up);
+      if (fast) {
+        // v5.27 — photos d'abord (le mail Rungis FAST les reprend), puis validation immédiate
+        try { await postJ(payload); } catch(_) {}
+        const j = await postJ({ action:"fast-delivery", id, ini:fast, by:opBy });
+        if (!j || !j.ok) throw new Error("FAST DELIVERY refusé : " + ((j && j.error) || "réponse invalide") + "\n\nLa demande reste enregistrée (mail Rungis à 23h59).");
+        setSending(false); setSel({}); setDolly({}); setPhotos({}); setMoves({}); setFastAsk(null); setIni("");
+        launchCelebration("⚡ FAST DELIVERY validé !", `${(j.lieux||[]).join(", ")} · récupération aujourd'hui · Rungis prévenu · BL partis · sur l'écran du chauffeur`);
+        return;
+      }
       // Photos + copie serveur en arrière-plan (l'écran ne reste plus bloqué sur « Enregistrement… »).
       try { fetch((ENLEVEMENT_URL||CODE_VERIFY_URL), { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) }).catch(()=>{}); } catch(_) {}
-    } catch(e) { alert("Erreur d'enregistrement : "+e.message); setSending(false); return; }
+    } catch(e) { setSending(false); setFastAsk(null); await ask({ title:fast?"❌ FAST DELIVERY":"❌ Pas enregistré", text:(fast?"":"Erreur d'enregistrement : ")+e.message, ok:"OK", cancel:false, color:"#c62828" }); return; }
     setSending(false); setSel({}); setDolly({}); setPhotos({}); setMoves({});
     launchCelebration("Demande enregistrée ! 🚛", `${totPal} palette(s)${totDolD?` · ${totDolD} dolly`:""}${totFro?` · ${totFro} 🧀`:""} · mail à Rungis à 23h59`);
   };
-  const freeCodes = Object.keys(STORE_LONG).filter(c => !lieux.find(x=>x.code===c));
+  // v5.27 — ⚡ FAST pour une demande déjà enregistrée
+  const fastExisting = async (r, initials) => {
+    setSending(true);
+    try { const j = await postJ({ action:"fast-delivery", id:r.id, ini:initials, by:opBy });
+      if (!j || !j.ok) throw new Error((j && j.error) || "réponse invalide");
+      setSending(false); setFastAsk(null); setIni("");
+      launchCelebration("⚡ FAST DELIVERY validé !", `${(j.lieux||[]).join(", ")} · récupération aujourd'hui`);
+    } catch(e) { setSending(false); setFastAsk(null); await ask({ title:"❌ FAST DELIVERY refusé", text:e.message, ok:"OK", cancel:false, color:"#c62828" }); }
+  };
+  const okIni = /^[A-Za-zÀ-ÿ]{2,4}$/.test(ini.trim());
+  const freeCodes = RUNGIS_STORES.filter(c => !lieux.find(x=>x.code===c));
   const MC = mode==="D" ? DISPATCH_COLOR : PICKING_COLOR;
   const tab = (m, txt, n) => { const on = mode===m; const c = m==="D" ? DISPATCH_COLOR : PICKING_COLOR;
     return <button onClick={()=>setModeKeep(m)} style={{flex:1, padding:"14px 6px", fontSize:16, fontWeight:900, border:"3px solid "+c, borderRadius:12, background:on?c:"#fff", color:on?"#fff":c}}>{txt}{n?` (${n})`:""}</button>; };
@@ -1938,7 +2026,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
               <span style={{background:c, color:"#fff", fontWeight:900, fontSize:17, padding:"4px 12px", borderRadius:8, boxShadow:"0 2px 6px rgba(0,0,0,.2)"}}>📍 {L.code} · {L.label}</span>
               <span style={{background:"#fff", color:c, border:"3px solid "+c, fontWeight:900, fontSize:15, padding:"2px 10px", borderRadius:8}}>{np} pal.{nd?` + ${nd} dolly`:""}{(dolly[L.code]||0)&&mode==="D"?` + ${dolly[L.code]} 🧀`:""}{lk.length?` · 🔒 ${lk.length} demandé(s)`:""}</span>
             </div>
-            {lk.map(x => <LockedEnlRow key={x.r.id+"_"+x.i} r={x.r} it={x.it} idx={x.i} myKey={myKey} />)}
+            {lk.map(x => <LockedEnlRow key={x.r.id+"_"+x.i} r={x.r} it={x.it} idx={x.i} myKey={myKey} onFast={x.r.status==="attente-23h59"||x.r.status==="envoye" ? (r)=>setFastAsk({ r }) : null} />)}
             {L.rows.map(r => rowView(r, L, c))}
             {mode==="D" && <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:10, padding:"8px 10px", background:"#f1f8e9", border:"2px dashed #689f38", borderRadius:12}}>
               <div style={{fontWeight:900, color:"#33691e"}}>🧀 Dolly fromage <span style={{fontWeight:500, fontSize:11}}>(cagettes vertes)</span></div>
@@ -1955,10 +2043,31 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
       <div style={{position:"fixed", left:0, right:0, bottom:0, background:"#fff", borderTop:"2px solid #ddd", padding:"10px 14px", zIndex:50}}>
         {built.length>0 && <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:8}}>{built.map(L=>(
           <span key={L.code} style={{background:L.color, color:"#fff", borderRadius:8, padding:"4px 10px", fontWeight:900, fontSize:14}}>{L.code} : {chipTxt(L)}</span>))}</div>}
-        <button className="btn-primary" disabled={!built.length||sending} onClick={send} style={{width:"100%", fontSize:18, fontWeight:900, padding:16, background:MC, opacity:built.length?1:.45}}>
-          {sending?"Enregistrement…":`🚛 Enregistrer ${mode==="D"?"DISPATCH":"PICKING"} — ${totPal} pal.${totDolD?` · ${totDolD} dolly`:""}${totFro?` · ${totFro} 🧀`:""}`}
-        </button>
+        <div style={{display:"flex", gap:8}}>
+          <button className="btn-primary" disabled={!built.length||sending} onClick={()=>send("")} style={{flex:2, fontSize:17, fontWeight:900, padding:"14px 8px", background:MC, opacity:built.length?1:.45}}>
+            {sending?"Enregistrement…":`🚛 Enregistrer ${mode==="D"?"DISPATCH":"PICKING"} — ${totPal} pal.${totDolD?` · ${totDolD} dolly`:""}${totFro?` · ${totFro} 🧀`:""}`}
+            {!sending && <div style={{fontSize:11, fontWeight:700, opacity:.9}}>mail Rungis à 23h59</div>}
+          </button>
+          <button disabled={!built.length||sending} onClick={()=>setFastAsk({})} style={{flex:1, fontSize:15, fontWeight:900, padding:"14px 6px", borderRadius:12, border:"none", background:"#c62828", color:"#fff", opacity:built.length?1:.45}}>⚡ FAST<div style={{fontSize:11, fontWeight:700}}>aujourd'hui</div></button>
+        </div>
+        {!built.length && rows.length>0 && <div style={{fontSize:12, fontWeight:800, color:"#555", textAlign:"center", marginTop:6}}>👆 Coche d'abord une palette (« Toucher pour ajouter »)</div>}
       </div>
+      {fastAsk && <div onClick={()=>!sending && setFastAsk(null)} style={{position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:250, display:"flex", alignItems:"center", justifyContent:"center", padding:14}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"#fff", borderRadius:18, padding:16, maxWidth:460, width:"100%", maxHeight:"85vh", overflow:"auto"}}>
+          <div style={{fontSize:22, fontWeight:900, color:"#c62828"}}>⚡ FAST DELIVERY aujourd'hui</div>
+          <div style={{fontSize:14, marginTop:6}}>Récupération <b>aujourd'hui</b> sans attendre la validation de Rungis. Rungis reçoit un mail (palettes + destinations), les BL partent aux magasins, c'est direct sur l'écran du chauffeur.</div>
+          <div style={{marginTop:8, border:"2px solid #eee", borderRadius:10, padding:8, fontSize:15, fontWeight:800}}>
+            {(fastAsk.r ? (enlItems(fastAsk.r)||[]).filter(x=>!x.kbg).map(x=>({ code:x.code, t:x.dollies?x.dollies+" dolly":x.n?x.n+" palette(s)":"même palette" })) : built.map(L=>({ code:L.code, t:chipTxt(L) }))).map((x,i) =>
+              <div key={i}><span style={{display:"inline-block", minWidth:44, textAlign:"center", background:siteColor(x.code), color:"#fff", borderRadius:6, padding:"1px 6px", marginRight:8}}>{x.code}</span>{x.t}</div>)}
+          </div>
+          <div style={{fontSize:15, fontWeight:900, marginTop:10}}>Tes initiales</div>
+          <input autoFocus value={ini} maxLength={4} onChange={e=>setIni(e.target.value.replace(/[^A-Za-zÀ-ÿ]/g,"").toUpperCase())} placeholder="ex. HG"
+            style={{width:"100%", boxSizing:"border-box", fontSize:26, fontWeight:900, letterSpacing:4, textAlign:"center", padding:10, borderRadius:12, border:"3px solid "+(okIni?"#c62828":"#ddd"), marginTop:4}} />
+          <button disabled={sending || !okIni} onClick={()=>{ const v = ini.trim().toUpperCase(); if (fastAsk.r) fastExisting(fastAsk.r, v); else { setFastAsk(null); send(v); } }}
+            style={{width:"100%", marginTop:10, border:"none", borderRadius:12, background:okIni?"#c62828":"#bdbdbd", color:"#fff", fontSize:18, fontWeight:900, minHeight:58}}>{sending?"Validation…":"✅ Valider le FAST DELIVERY"}</button>
+          <button disabled={sending} onClick={()=>setFastAsk(null)} style={{width:"100%", marginTop:8, minHeight:52, borderRadius:12, border:"2px solid #ddd", background:"#fff", fontWeight:900, fontSize:16}}>Annuler</button>
+        </div></div>}
+      {askEl}
     </div>
   );
 }
@@ -2010,6 +2119,7 @@ function paletteArrivee(s, operator, annuler){
     return;
   }
   db.ref(`dispatch/${s.id}/arrivee`).set({ at:Date.now(), by:who }).catch(e=>alert("Erreur : "+e.message));
+  noteNameless(`dispatch/${s.id}/arrivee`, "by", who);
 }
 function HomeScreen({ operator, meOp, allSessions, allPicking, adminEmail, onJoinSession, onJoinPicking, onOpenEnlevement, onBack, onLogout }) {
   const dateKey = todayKey();
@@ -3371,11 +3481,35 @@ function expParseLine(t){
   return { q: q || 1, u: u || "carton", d: s.charAt(0).toUpperCase() + s.slice(1) };
 }
 const expLineTxt = (l) => { const pl = Number(l.q) > 1; const U = EXP_UNITS.find(x=>x[0]===l.u) || [l.u, l.u]; return l.u==="unité" ? l.d : `${l.d} (${pl ? U[1] : U[0]})`; };
-const expNewColis = () => ({ id: "c"+Date.now().toString(36)+Math.random().toString(36).slice(2,5), fmt:"pal", n:1, autre:false, code:"", zone:"", frais:false, photo:"", lines:[], note:"" });
+const expNewColis = () => ({ id: "c"+Date.now().toString(36)+Math.random().toString(36).slice(2,5), fmt:"pal", n:1, autre:false, code:"", zone:"", frais:false, photo:"", lines:[], note:"", tgt:null });
+// v5.26 — ➕ produits ajoutés sur une palette DÉJÀ demandée (pas encore partie : avant le mail Rungis de 23h59).
+//   Les lignes s'ajoutent au BL de cette palette (enlevements/<id>/items/<i>/lines), sans nouvelle palette.
+async function expAddToPalette(tgt, lines, by){
+  const path = `enlevements/${tgt.id}`;
+  await withTimeout(db.ref(path).once("value"), 15000);   // en cache local : la transaction part de la vraie valeur
+  const add = lines.map(l => ({ s:"Express hors process", d:expLineTxt(l), q:Number(l.q)||0 }));
+  const q = add.reduce((a,l)=>a+l.q,0);
+  let why = "";
+  const res = await db.ref(path).transaction(cur => {
+    if (!cur) { why = "demande introuvable"; return; }
+    if (cur.status !== "attente-23h59") { why = "palette déjà envoyée à Rungis"; return; }
+    const items = Array.isArray(cur.items) ? cur.items.slice() : Object.keys(cur.items||{}).sort((a,b)=>Number(a)-Number(b)).map(k=>cur.items[k]);
+    const it = items[tgt.i];
+    if (!it || it.key !== tgt.key) { why = "palette modifiée entre-temps"; return; }
+    const sups = Array.isArray(it.sups) ? it.sups.slice() : [];
+    const k = sups.findIndex(x => x && x.name==="✍️ Express hors process");
+    if (k >= 0) sups[k] = { ...sups[k], qty:(Number(sups[k].qty)||0) + q }; else sups.push({ name:"✍️ Express hors process", qty:q });
+    items[tgt.i] = { ...it, lines:[ ...(Array.isArray(it.lines)?it.lines:[]), ...add ], total:(Number(it.total)||0) + q, sups,
+      expressAdd:[ ...(Array.isArray(it.expressAdd)?it.expressAdd:[]), { at:Date.now(), by, n:add.length, q } ] };
+    return { ...cur, items };
+  });
+  if (!res.committed) throw new Error(why || "palette déjà partie");
+}
 function expSuggest(){ try { return JSON.parse(localStorage.getItem("exp_designations")||"[]"); } catch(e){ return []; } }
 function expRemember(ds){ try { const o = expSuggest(); ds.forEach(d => { const i=o.indexOf(d); if (i>=0) o.splice(i,1); o.unshift(d); }); localStorage.setItem("exp_designations", JSON.stringify(o.slice(0,80))); } catch(e){} }
 
 function ExpressScreen({ operator, onBack }) {
+  const [askEl, ask] = useAsk();
   const opBy = safeName(operator && operator.name);
   const myKey = useOwnerKey(operator);
   const dateKey = todayKey();
@@ -3389,6 +3523,12 @@ function ExpressScreen({ operator, onBack }) {
   const [ini, setIni] = useState("");
   const reqs = useEnlevementsEnCours({});
   const myExpress = reqs.filter(r => r.express && r.date===dateKey);
+  // v5.26 — palettes déjà demandées, pas encore parties (avant 23h59) : on peut y ajouter des produits
+  const targets = useMemo(() => reqs.filter(r => r.status==="attente-23h59" && !isLegacyEnl(r))
+    .flatMap(r => (enlItems(r)||[]).map((it,i) => ({ r, it, i })))
+    .filter(x => x.it && !x.it.kbg && !x.it.mergedWith && ((Number(x.it.n)||0) > 0 || (Number(x.it.dollies)||0) > 0) && isRungisStore(x.it.code))
+    .sort((a,b) => String(a.it.code).localeCompare(String(b.it.code)) || (b.r.at||0)-(a.r.at||0)), [reqs]);
+  const tgtTxt = (x) => `${x.it.express ? "✍️ Express" : x.it.type==="PICKING" ? "🛒 Picking"+(x.it.ref?" cde "+x.it.ref:"") : "🚚 Dispatch"} · ${x.it.dollies ? x.it.dollies+" dolly" : x.it.n+" pal."}${x.it.zone&&ZONES[x.it.zone]?" · "+ZONES[x.it.zone].short:""}`;
   const sugg = useMemo(expSuggest, [sending]);
   const C = colis[cur] || colis[0];
   const updC = (patch) => setColis(cs => cs.map((c,i) => i===cur ? { ...c, ...patch } : c));
@@ -3397,13 +3537,16 @@ function ExpressScreen({ operator, onBack }) {
   const addPaste = () => { const ls = String(pasteTxt).split(/\n|;/).map(expParseLine).filter(Boolean); addLines(ls); setPasteTxt(""); setPaste(false); };
   const setLine = (i, patch) => updC({ lines: C.lines.map((l,j) => j===i ? { ...l, ...patch } : l) });
   const delLine = (i) => updC({ lines: C.lines.filter((_,j) => j!==i) });
-  const STORES = ["ROB","TOL","BIC", ...Object.keys(STORE_LONG).filter(c => !["ROB","TOL","BIC","PDP"].includes(c))];
+  const STORES = RUNGIS_STORES;   // v5.26 — jamais PDP (entrepôt) ni les points camion
   const big = { minHeight:52, borderRadius:12, fontWeight:900, fontSize:16 };
   const chip = (on, col) => ({ padding:"10px 14px", borderRadius:12, border:"3px solid "+col, background:on?col:"#fff", color:on?"#fff":col, fontWeight:900, fontSize:16, minHeight:48 });
-  const fmtTxt = (c) => c.fmt==="dolly" ? `${c.n} dolly` : `${c.n} palette${c.n>1?"s":""}${c.autre?" (autre format)":" EPAL"}`;
-  const problems = (c, i) => { const p = []; if (!c.code) p.push("destination"); if (!c.lines.length) p.push("contenu"); if (!c.zone) p.push("emplacement"); return p.length ? `Colis ${i+1} : ${p.join(", ")}` : ""; };
+  const fmtTxt = (c) => c.fmt==="add" ? (c.tgt ? `➕ sur ${c.tgt.txt}` : "➕ sur une palette déjà demandée") : c.fmt==="dolly" ? `${c.n} dolly` : `${c.n} palette${c.n>1?"s":""}${c.autre?" (autre format)":" EPAL"}`;
+  const problems = (c, i) => { const p = [];
+    if (c.fmt==="add") { if (!c.tgt) p.push("palette à compléter"); if (!c.lines.length) p.push("contenu"); }
+    else { if (!c.code) p.push("destination"); if (!c.lines.length) p.push("contenu"); if (!c.zone) p.push("emplacement"); }
+    return p.length ? `Colis ${i+1} : ${p.join(", ")}` : ""; };
 
-  const build = () => {
+  const build = (colis) => {
     const id = "enl_" + Date.now();
     const items = colis.map((c, i) => {
       const lines = c.lines.map(l => ({ s:"Express hors process", d:expLineTxt(l), q:Number(l.q)||0 }));
@@ -3427,16 +3570,22 @@ function ExpressScreen({ operator, onBack }) {
   // fast = initiales (string) → ⚡ FAST DELIVERY aujourd'hui ; sinon demande normale (mail 23h59)
   const send = async (fast) => {
     const pb = colis.map(problems).filter(Boolean);
-    if (pb.length) { alert("Il manque :\n\n• " + pb.join("\n• ")); return; }
-    const noPh = colis.filter(c=>!c.photo).length;
-    const { id, items, payload, rec } = build();
-    const recap = colis.map((c,i) => `📍 ${c.code} · ${fmtTxt(c)} · ${ZONES[c.zone].short}${c.frais?" ❄️":""}\n` + c.lines.map(l=>`   • ${l.q} × ${expLineTxt(l)}`).join("\n")).join("\n");
-    if (!fast && !confirm(`Demande d'enlèvement EXPRESS ?\n\n${recap}${noPh?`\n\n📷 ${noPh} sans photo (conseillé pour le chauffeur)`:""}\n\n📨 Mail automatique à Rungis à 23h59.`)) return;
+    if (pb.length) { await ask({ title:"Il manque…", text:"• " + pb.join("\n• "), ok:"Compris", cancel:false }); return; }
+    const adds = colis.filter(c => c.fmt==="add"), news = colis.filter(c => c.fmt!=="add");
+    if (fast && adds.length) { await ask({ title:"⚡ FAST DELIVERY", text:"Le FAST DELIVERY se fait pour une NOUVELLE palette.\nPour les produits ajoutés sur une palette déjà demandée : « 🚛 Demande Rungis ».", ok:"Compris", cancel:false }); return; }
+    const noPh = news.filter(c=>!c.photo).length;
+    const recap = colis.map((c,i) => (c.fmt==="add" ? `📍 ${c.code} · ${fmtTxt(c)}\n` : `📍 ${c.code} · ${fmtTxt(c)} · ${ZONES[c.zone].short}${c.frais?" ❄️":""}\n`) + c.lines.map(l=>`   • ${l.q} × ${expLineTxt(l)}`).join("\n")).join("\n");
+    if (!fast && !(await ask({ title:"Demande d'enlèvement EXPRESS ?", text:`${recap}${noPh?`\n\n📷 ${noPh} sans photo (conseillé pour le chauffeur)`:""}\n\n📨 Mail automatique à Rungis à 23h59.`, ok:"✅ Enregistrer" }))) return;
     setSending(true);
     try {
       if (!firebaseReady) throw new Error("connexion indisponible — réessaie dans un instant");
-      await db.ref("enlevements/"+id).set(rec);
+      const addErr = [];
+      for (const c of adds) { try { await expAddToPalette(c.tgt, c.lines, opBy); } catch(e) { addErr.push(`${c.code} · ${c.tgt.txt} : ${e.message}`); } }
       expRemember(colis.flatMap(c => c.lines.map(l => l.d)));
+      if (addErr.length) throw new Error("Produits NON ajoutés (fais une nouvelle palette) :\n• " + addErr.join("\n• "));
+      if (!news.length) { launchCelebration("Produits ajoutés ! ➕", `${adds.length} palette(s) complétée(s) · sur le BL · mail à Rungis à 23h59`); setColis([expNewColis()]); setCur(0); setSending(false); return; }
+      const { id, items, payload, rec } = build(news);
+      await db.ref("enlevements/"+id).set(rec);
       if (fast) {
         // photos d'abord (le mail Rungis FAST les reprend), puis validation immédiate
         try { await post(payload); } catch(_) {}
@@ -3445,10 +3594,10 @@ function ExpressScreen({ operator, onBack }) {
         launchCelebration("⚡ FAST DELIVERY validé !", `${(j.lieux||[]).join(", ")} · récupération aujourd'hui · Rungis prévenu · BL partis · sur l'écran du chauffeur`);
       } else {
         try { fetch(ENLEVEMENT_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(payload) }).catch(()=>{}); } catch(_) {}
-        launchCelebration("Demande express enregistrée ! 🚛", `${items.length} colis · mail à Rungis à 23h59`);
+        launchCelebration("Demande express enregistrée ! 🚛", `${items.length} colis${adds.length?` + ${adds.length} palette(s) complétée(s)`:""} · mail à Rungis à 23h59`);
       }
       setColis([expNewColis()]); setCur(0); setFastAsk(null); setIni("");
-    } catch(e) { alert("Erreur : " + e.message); }
+    } catch(e) { setSending(false); await ask({ title:"❌ Erreur", text:e.message, ok:"OK", cancel:false, color:"#c62828" }); return; }
     setSending(false);
   };
   const fastExisting = async (r, initials) => {
@@ -3456,7 +3605,7 @@ function ExpressScreen({ operator, onBack }) {
     try { const j = await post({ action:"fast-delivery", id:r.id, ini:initials, by:opBy });
       if (!j || !j.ok) throw new Error((j && j.error) || "réponse invalide");
       launchCelebration("⚡ FAST DELIVERY validé !", `${(j.lieux||[]).join(", ")} · récupération aujourd'hui`); setFastAsk(null); setIni("");
-    } catch(e) { alert("FAST DELIVERY refusé : " + e.message); }
+    } catch(e) { setSending(false); await ask({ title:"❌ FAST DELIVERY refusé", text:e.message, ok:"OK", cancel:false, color:"#c62828" }); return; }
     setSending(false);
   };
   const okIni = /^[A-Za-zÀ-ÿ]{2,4}$/.test(ini.trim());
@@ -3471,28 +3620,43 @@ function ExpressScreen({ operator, onBack }) {
       <div style={{padding:12, paddingBottom:170}}>
         {/* onglets colis */}
         <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:10}}>
-          {colis.map((c,i) => <button key={c.id} onClick={()=>setCur(i)} style={{ ...chip(i===cur, c.code?siteColor(c.code):"#6a1b9a"), fontSize:14 }}>{c.fmt==="dolly"?"🛒":"🟫"} {i+1}{c.code?" · "+c.code:""}{c.lines.length?` (${c.lines.length})`:""}</button>)}
-          <button onClick={()=>{ setColis(cs=>[...cs, { ...expNewColis(), code:C.code, zone:C.zone }]); setCur(colis.length); }} style={{ ...chip(false,"#6a1b9a"), fontSize:14 }}>＋ Autre palette / dolly</button>
+          {colis.map((c,i) => <button key={c.id} onClick={()=>setCur(i)} style={{ ...chip(i===cur, c.code?siteColor(c.code):"#6a1b9a"), fontSize:14 }}>{c.fmt==="add"?"➕":c.fmt==="dolly"?"🛒":"🟫"} {i+1}{c.code?" · "+c.code:""}{c.lines.length?` (${c.lines.length})`:""}</button>)}
+          <button onClick={()=>{ setColis(cs=>[...cs, { ...expNewColis(), code:C.fmt==="add"?"":C.code, zone:C.fmt==="add"?"":C.zone }]); setCur(colis.length); }} style={{ ...chip(false,"#6a1b9a"), fontSize:14 }}>＋ Autre palette / dolly</button>
         </div>
 
         <div style={{border:"3px solid "+col, borderRadius:16, padding:12, background:"#fff"}}>
           {/* 1. format */}
           <div style={{fontWeight:900, fontSize:15, marginBottom:6}}>1 · Quoi ?</div>
           <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center"}}>
-            <button onClick={()=>updC({fmt:"pal"})} style={chip(C.fmt==="pal","#6d4c41")}>🟫 Palette</button>
-            <button onClick={()=>updC({fmt:"dolly"})} style={chip(C.fmt==="dolly","#33691e")}>🛒 Dolly</button>
-            <span style={{display:"inline-flex", alignItems:"center", gap:6, marginLeft:4}}>
+            <button onClick={()=>updC({fmt:"pal", tgt:null})} style={chip(C.fmt==="pal","#6d4c41")}>🟫 Nouvelle palette</button>
+            <button onClick={()=>updC({fmt:"dolly", tgt:null})} style={chip(C.fmt==="dolly","#33691e")}>🛒 Dolly</button>
+            <button onClick={()=>updC({fmt:"add"})} style={chip(C.fmt==="add","#e65100")}>➕ Sur une palette déjà demandée</button>
+            {C.fmt!=="add" && <span style={{display:"inline-flex", alignItems:"center", gap:6, marginLeft:4}}>
               <button onClick={()=>updC({n:Math.max(1,C.n-1)})} style={{width:44,height:44,borderRadius:12,border:"2px solid #999",background:"#fff",fontSize:24,fontWeight:900}}>−</button>
               <b style={{minWidth:30, textAlign:"center", fontSize:26}}>{C.n}</b>
-              <button onClick={()=>updC({n:C.n+1})} style={{width:44,height:44,borderRadius:12,border:"none",background:"#6a1b9a",color:"#fff",fontSize:24,fontWeight:900}}>+</button></span>
+              <button onClick={()=>updC({n:C.n+1})} style={{width:44,height:44,borderRadius:12,border:"none",background:"#6a1b9a",color:"#fff",fontSize:24,fontWeight:900}}>+</button></span>}
             {C.fmt==="pal" && <label style={{fontSize:14, fontWeight:800, display:"inline-flex", alignItems:"center", gap:6}}><input type="checkbox" checked={C.autre} onChange={e=>updC({autre:e.target.checked})} style={{width:22,height:22}}/>autre format (pas EPAL)</label>}
           </div>
 
-          {/* 2. destination */}
+          {/* 2. destination — ou palette déjà demandée à compléter */}
+          {C.fmt==="add" ? <>
+            <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>2 · Sur quelle palette ? <span style={{fontWeight:600, fontSize:12, color:"#777"}}>(demandées aujourd'hui, pas encore parties — avant 23h59)</span></div>
+            {!targets.length && <div style={{padding:"10px 12px", borderRadius:12, background:"#fff3e0", fontWeight:800, color:"#e65100"}}>Aucune palette en attente d'enlèvement. Choisis « 🟫 Nouvelle palette ».</div>}
+            <div style={{display:"flex", flexDirection:"column", gap:6}}>
+              {targets.map(x => { const on = C.tgt && C.tgt.id===x.r.id && C.tgt.i===x.i; const c = siteColor(x.it.code);
+                return <button key={x.r.id+"_"+x.i} onClick={()=>updC({ tgt:{ id:x.r.id, i:x.i, key:x.it.key, txt:tgtTxt(x) }, code:x.it.code, zone:x.it.zone||"" })}
+                  style={{textAlign:"left", padding:"10px 12px", borderRadius:12, border:"3px solid "+(on?c:"#ddd"), background:on?c+"18":"#fff", fontSize:15}}>
+                  <span style={{display:"inline-block", minWidth:44, textAlign:"center", background:c, color:"#fff", borderRadius:6, padding:"1px 6px", marginRight:8, fontWeight:900}}>{x.it.code}</span>
+                  <b>{tgtTxt(x)}</b>
+                  <div style={{fontSize:12, color:"#555", marginTop:2}}>Demandé par {safeName(x.r.by)} · {fmtTime(x.r.at)} · {(x.it.sups||[]).slice(0,3).map(z=>z.name).join(" · ")}</div>
+                </button>; })}
+            </div>
+          </> : <>
           <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>2 · Pour quel magasin ?</div>
           <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
             {STORES.map(c => <button key={c} onClick={()=>updC({code:c})} style={{ ...chip(C.code===c, siteColor(c)), padding:"8px 12px", fontSize:15 }}>{c}</button>)}
           </div>
+          </>}
           {C.code && <div style={{fontSize:13, fontWeight:800, color:col, marginTop:4}}>→ {storeLong(C.code)}</div>}
 
           {/* 3. contenu */}
@@ -3522,7 +3686,8 @@ function ExpressScreen({ operator, onBack }) {
               </div>))}
           </div>}
 
-          {/* 4. emplacement + photo */}
+          {/* 4. emplacement + photo (pas pour un ajout sur une palette déjà demandée) */}
+          {C.fmt!=="add" && <>
           <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>4 · Où est-elle à PDP ?</div>
           <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center"}}>
             {Object.keys(ZONES).map(z => <button key={z} onClick={()=>updC({zone:z})} style={chip(C.zone===z, ZONES[z].col)}>{ZONES[z].txt}</button>)}
@@ -3535,7 +3700,8 @@ function ExpressScreen({ operator, onBack }) {
             <button onClick={()=>document.getElementById("exp_ph_"+C.id).click()} style={{padding:"10px 14px", borderRadius:10, fontWeight:800, fontSize:14, border:"2px solid "+(C.photo?"#2e7d32":"#e65100"), background:C.photo?"#e8f5e9":"#fff", color:C.photo?"#2e7d32":"#e65100"}}>📷 {C.photo?"Reprendre la photo":"Photo de la palette"}</button>
             <input value={C.note} onChange={e=>updC({note:e.target.value})} placeholder="ℹ️ Info chauffeur (facultatif)" style={{flex:"1 1 160px", minWidth:0, fontSize:15, padding:"10px", borderRadius:10, border:"2px solid #ddd"}} />
           </div>
-          {colis.length>1 && <button onClick={()=>{ if(!confirm("Supprimer ce colis ?")) return; setColis(cs=>cs.filter((_,i)=>i!==cur)); setCur(0); }} style={{marginTop:10, padding:"8px 12px", borderRadius:10, border:"2px solid #c62828", background:"#fff", color:"#c62828", fontWeight:800}}>🗑️ Supprimer ce colis</button>}
+          </>}
+          {colis.length>1 && <button onClick={async ()=>{ if(!(await ask({ title:"Supprimer ce colis ?", ok:"🗑️ Supprimer", color:"#c62828" }))) return; setColis(cs=>cs.filter((_,i)=>i!==cur)); setCur(0); }} style={{marginTop:10, padding:"8px 12px", borderRadius:10, border:"2px solid #c62828", background:"#fff", color:"#c62828", fontWeight:800}}>🗑️ Supprimer ce colis</button>}
         </div>
 
         {/* demandes express du jour en attente */}
@@ -3552,7 +3718,7 @@ function ExpressScreen({ operator, onBack }) {
       {/* barre d'envoi */}
       <div style={{position:"fixed", left:0, right:0, bottom:0, background:"#fff", borderTop:"3px solid #6a1b9a", padding:10, display:"flex", gap:8, zIndex:20}}>
         <button disabled={sending} onClick={()=>send("")} style={{ ...big, flex:1, border:"none", background:"#e65100", color:"#fff", fontSize:15 }}>{sending?"…":"🚛 Demande Rungis (mail 23h59)"}</button>
-        <button disabled={sending} onClick={()=>{ const pb=colis.map(problems).filter(Boolean); if (pb.length) { alert("Il manque :\n\n• "+pb.join("\n• ")); return; } setFastAsk({}); }} style={{ ...big, flex:1, border:"none", background:"#c62828", color:"#fff", fontSize:15 }}>⚡ FAST DELIVERY aujourd'hui</button>
+        <button disabled={sending} onClick={async ()=>{ const pb=colis.map(problems).filter(Boolean); if (pb.length) { await ask({ title:"Il manque…", text:"• "+pb.join("\n• "), ok:"Compris", cancel:false }); return; } if (colis.some(c=>c.fmt==="add")) { await ask({ title:"⚡ FAST DELIVERY", text:"Le FAST DELIVERY se fait pour une NOUVELLE palette.", ok:"Compris", cancel:false }); return; } setFastAsk({}); }} style={{ ...big, flex:1, border:"none", background:"#c62828", color:"#fff", fontSize:15 }}>⚡ FAST DELIVERY aujourd'hui</button>
       </div>
 
       {fastAsk && <div onClick={()=>!sending && setFastAsk(null)} style={{position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:50, display:"flex", alignItems:"center", justifyContent:"center", padding:14}}>
@@ -3570,6 +3736,7 @@ function ExpressScreen({ operator, onBack }) {
             style={{ ...big, width:"100%", marginTop:10, border:"none", background:okIni?"#c62828":"#bdbdbd", color:"#fff", fontSize:18, minHeight:58 }}>{sending?"Validation…":"✅ Valider le FAST DELIVERY"}</button>
           <button disabled={sending} onClick={()=>setFastAsk(null)} style={{ ...big, width:"100%", marginTop:8, border:"2px solid #ddd", background:"#fff" }}>Annuler</button>
         </div></div>}
+      {askEl}
     </div>
   );
 }
@@ -4098,7 +4265,7 @@ function pushDecoupeRecap(sessionId, products, state, operator, entity) {
     robMeules:Math.round(t.robMeules*100)/100, done:t.done, total:t.total,
     lines:t.lines.map(l=>({ designation:l.designation, kbgN:l.kbgN, kbgTheo:l.theo||0, rend:(l.rend!=null?l.rend:null), kbgTarget:l.kbgTarget||0, robN:l.robN, kbgG:Math.round(l.kbgG), robG:Math.round(l.robG), poidsRecu:l.poidsRecu||0, robMeules:Math.round((l.robMeules||0)*100)/100, robUnit:l.robUnit||"meule", sticker:!!l.sticker, cutAt:l.cutAt||0, cutDay:l.cutDay||"" })),
     cutDays:[...new Set(t.lines.map(l=>l.cutDay).filter(Boolean))].sort(),
-    updatedAt:Date.now(), by:(operator&&(operator.name||("#"+operator.code)))||""
+    updatedAt:Date.now(), by:(operator&&((operator.name||"Opérateur")))||""
   }).catch(()=>{});
 }
 
@@ -4211,7 +4378,7 @@ function TracabilitePanel({ sessionId, operator, products, labels, onSaved, blNu
       if (!res.ok) setMsg("⚠️ Photo non envoyée au Drive (serveur) — saisie conservée. " + (res.error||""));
     }
     const entry = { nom:nom.trim(), lot:lot.trim(), dlc:dlc.trim(), bl:bl.trim(), magasin, photoUrl:url,
-      dlcWrite:ctrl.write, dlcEti:ctrl.eti, handwrite:ctrl.handwrite, daysLeft:ctrl.daysLeft, at:Date.now(), by:operator.name||("#"+operator.code) };
+      dlcWrite:ctrl.write, dlcEti:ctrl.eti, handwrite:ctrl.handwrite, daysLeft:ctrl.daysLeft, at:Date.now(), by:(operator.name||"Opérateur") };
     const tracaPath = sessionId ? `decoupe/${sessionId}/tracabilite` : `tracabilite/${todayKey()}`;
     if (firebaseReady) { const ref = db.ref(tracaPath).push(); await ref.set(entry).catch(()=>{}); }
     onSaved && onSaved(entry);
@@ -4302,7 +4469,7 @@ function ReceptionPanel({ sessionId, operator, products, state, onSetRow, bls })
     try {
       const b64 = await fileToBase64(file);
       const res = await uploadTracabilite({ base64:b64, filename:file.name||"BL.jpg", magasin:"BL", nom:"BL", lot:"", dlc:"", operatorCode:operator.code });
-      if (firebaseReady && sessionId) { const ref = db.ref(`decoupe/${sessionId}/bl`).push(); await ref.set({ url:res.url||"", at:Date.now(), by:operator.name||("#"+operator.code) }).catch(()=>{}); }
+      if (firebaseReady && sessionId) { const ref = db.ref(`decoupe/${sessionId}/bl`).push(); await ref.set({ url:res.url||"", at:Date.now(), by:(operator.name||"Opérateur") }).catch(()=>{}); }
       setMsg(res.ok ? "✓ BL enregistré (Drive)" : "⚠️ BL non envoyé au Drive (serveur) — réessaie.");
     } catch(e){ setMsg("Photo illisible."); }
     setBusy(false); if (fileRef.current) fileRef.current.value="";
@@ -4356,7 +4523,7 @@ function CheeseWeigh({ product, pkey, status, operator, connected, onSetRow, onC
   const validate = () => {
     if (weight<=0) return;
     const dest = frRoute(product, weight, agg.kbgN);
-    const pieces = [ ...((status&&status.pieces)||[]), { w:weight, dest, at:Date.now(), by:operator.name||("#"+operator.code) } ];
+    const pieces = [ ...((status&&status.pieces)||[]), { w:weight, dest, at:Date.now(), by:(operator.name||"Opérateur") } ];
     onSetRow(pkey, { pieces });
     try { navigator.vibrate && navigator.vibrate(dest==="KBG"?60:[40,40,40]); } catch(e){}
     setW("");
@@ -4368,7 +4535,7 @@ function CheeseWeigh({ product, pkey, status, operator, connected, onSetRow, onC
     onSetRow(pkey, { pieces });
   };
   const finish = () => {
-    onSetRow(pkey, { done:true, doneBy:operator.name||("#"+operator.code), doneAt:Date.now() });
+    onSetRow(pkey, { done:true, doneBy:(operator.name||"Opérateur"), doneAt:Date.now() });
     onClose();
   };
   return (
@@ -4887,7 +5054,7 @@ function DecoupeScreen({ sessionId, operator, supplier, products, onFinish, onLe
                   </>); })()}
                   </>)}
                   {!isDone
-                    ? <button className="btn-validate" style={{width:"100%", marginTop:8, background:"#2e7d32"}} onClick={()=>setRow(p._pkey,{done:true, doneBy:operator.name||("#"+operator.code), doneAt:Date.now()})}>✓ Terminer ce fromage</button>
+                    ? <button className="btn-validate" style={{width:"100%", marginTop:8, background:"#2e7d32"}} onClick={()=>setRow(p._pkey,{done:true, doneBy:(operator.name||"Opérateur"), doneAt:Date.now()})}>✓ Terminer ce fromage</button>
                     : <button className="btn-undo" style={{width:"100%", marginTop:8}} onClick={()=>setRow(p._pkey,{done:false, doneBy:null, doneAt:null})}>Annuler « terminé »</button>}
                 </div>
               );
@@ -5753,6 +5920,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
   const writeState = (k, patch) => {
     if (!firebaseReady) { flash("Hors-ligne : non synchronisé"); return; }
     db.ref(`picking/${pickingId}/state/${k}`).update(patch);
+    if (patch && patch.doneBy) noteNameless(`picking/${pickingId}/state/${k}`, "doneBy", patch.doneBy);
   };
   const doValidate = (p, v) => {
     writeState(p.k, { done:true, picked:v, qty:Number(p.qty)||0, doneBy:opBy, doneAt:Date.now() });
@@ -5823,6 +5991,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
     try {
       await db.ref(`picking/${pickingId}/meta/products`).transaction(cur => [ ...(Array.isArray(cur)?cur:[]), np ]);
       await db.ref(`picking/${pickingId}/state/${k}`).set({ done:true, picked:q, qty:0, doneBy:opBy, doneAt:Date.now(), manual:true });
+      noteNameless(`picking/${pickingId}/state/${k}`, "doneBy", opBy);
       flash(`➕ ${des} ajouté (${q})`, 1800); setAddDlg(null); focusScan();
     } catch(e) { alert("Erreur : "+e.message); }
   };
@@ -6027,7 +6196,8 @@ function App() {
       ["centrale_op_code","centrale_op_name","centrale_op_at"].forEach(k=>localStorage.removeItem(k));
       return null;
     }
-    return { code:c, name: localStorage.getItem("centrale_op_name")||"" };
+    const nm = localStorage.getItem("centrale_op_name")||"";
+    return { code:c, name: opIsNameless(nm) ? "" : nm };   // v5.26 — « Code 1234 » / « Opérateur » enregistré par une ancienne version = pas un nom
   });
   // Plus de connexion admin dans l'app : l'identité = uniquement le code opérateur.
   // On purge l'ancienne clé qui provoquait une "connexion" fantôme (ex. hg@probon.fr).
@@ -6038,12 +6208,17 @@ function App() {
     setOperator(null); setModule(null);
   };
   // v5.15 : opérateur sans nom (ancienne connexion) → Prénom Nom résolus depuis le registre (le code n'est jamais affiché).
+  // v5.25 : nouvel essai toutes les minutes tant que le nom manque ; dès qu'il est connu, les lignes écrites
+  //   « Opérateur » depuis cette tablette reçoivent le vrai nom (healNameless).
   useEffect(() => {
-    if (!operator || !operator.code || operator.name) return;
-    let alive = true; const c = operator.code;
-    resolveOperatorName(c).then(n => { if (!alive || !n) return; try { localStorage.setItem("centrale_op_name", n); } catch(e){}
+    if (!operator || !operator.code) return;
+    const c = operator.code;
+    if (operator.name && !opIsNameless(operator.name)) { healNameless(c, operator.name); healEnlBy(c, operator.name); return; }
+    let alive = true;
+    const tryIt = () => resolveOperatorName(c).then(n => { if (!alive || !n) return; try { localStorage.setItem("centrale_op_name", n); } catch(e){}
       setOperator(o => (o && o.code===c) ? { ...o, name:n } : o); });
-    return () => { alive = false; };
+    tryIt(); const iv = setInterval(tryIt, 60000);
+    return () => { alive = false; clearInterval(iv); };
   }, [operator && operator.code, operator && operator.name]);
 
   // ----- État module DISPATCH -----
