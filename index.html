@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.28";
+const APP_VERSION = "v5.29";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -742,13 +742,13 @@ const isAdminEmail = (email) => ADMIN_EMAILS.map(e=>e.toLowerCase()).includes((e
 const isFallbackAdmin = (name) => FALLBACK_ADMIN_NAMES.includes((name||"").toLowerCase().trim());
 
 // Noms longs des magasins pour les BL / palettes.
-const STORE_LONG = { ROB:"ROBESPIERRE", TOL:"TOLBIAC", PDP:"PORTE DE PANTIN", BIC:"BICHAT", BAR:"BARBES", BOR:"BORREGO", CES:"CESAR", CHA:"CHARONNE", FOR:"FORGE", LIL:"LILLE", NCA:"NATION A", NCC:"NATION C", PAD:"PADOUE", PDC:"PLACE DE CLICHY", ROM:"ROME", STB:"SAINT-BLAISE" };
+const STORE_LONG = { RUNGIS:"RUNGIS (retour emballages)", ROB:"ROBESPIERRE", TOL:"TOLBIAC", PDP:"PORTE DE PANTIN", BIC:"BICHAT", BAR:"BARBES", BOR:"BORREGO", CES:"CESAR", CHA:"CHARONNE", FOR:"FORGE", LIL:"LILLE", NCA:"NATION A", NCC:"NATION C", PAD:"PADOUE", PDC:"PLACE DE CLICHY", ROM:"ROME", STB:"SAINT-BLAISE" };
 // v5.26 — Rungis n'enlève QUE pour les boutiques. Jamais PDP (c'est l'entrepôt) ni les points camion.
 const RUNGIS_STORES = ["ROB","TOL","BIC","BOR","STB","PDC"];
 const isRungisStore = (c) => RUNGIS_STORES.includes(String(c||"").toUpperCase());
 const storeLong = (code, label) => STORE_LONG[code] || label || code;
 // v5.12 — 🎨 couleur par lieu (identique à la prépa de commande Kelbongoo) : lisible, pas d'erreur de destination.
-const SITE_COLORS = { BIC:'#FF1F8E', BOR:'#FF6D00', STB:'#00B060', PDP:'#7C3AED', TOL:'#0A84FF', ROB:'#E11D48', PDC:'#00A8B5',
+const SITE_COLORS = { RUNGIS:'#5d4037', BIC:'#FF1F8E', BOR:'#FF6D00', STB:'#00B060', PDP:'#7C3AED', TOL:'#0A84FF', ROB:'#E11D48', PDC:'#00A8B5',
   NCC:'#D946EF', LIL:'#9333EA', CES:'#16A34A', BAR:'#F43F5E', CHA:'#2563EB', NCA:'#0D9488', ROM:'#EA580C', FOR:'#B45309', PAD:'#DB2777' };
 const SITE_PALETTE = ['#FF1F8E','#FF6D00','#00B060','#7C3AED','#0A84FF','#E11D48','#00A8B5','#D946EF','#16A34A','#EA580C','#2563EB','#DB2777'];
 function siteColor(code){ const c=String(code||"").toUpperCase(); if (SITE_COLORS[c]) return SITE_COLORS[c]; let h=0; for (const ch of c) h=(h*31+ch.charCodeAt(0))>>>0; return SITE_PALETTE[h%SITE_PALETTE.length]; }
@@ -1774,7 +1774,7 @@ function DemandesEnCours({ me, allPicking }) {
 // Quantité lisible d'une ligne d'enlèvement (palettes / dollys / via Kelbongoo / fusion).
 function enlItemQty(it) {
   if (it.kbg) return "📦 envoyé via Kelbongoo (pas à enlever)";
-  if (it.dollies > 0) return "🛞 " + it.dollies + " dolly(s)";
+  if (it.dollies > 0) return (it.roll ? "🛒 " + it.dollies + " roll(s)" : "🛞 " + it.dollies + " dolly(s)") + (it.contenu ? " · " + it.contenu : "");
   if (it.n > 0) return "🟫 " + it.n + " pal.";
   return "🔗 même palette que " + (it.mergedWith || "");
 }
@@ -2090,7 +2090,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
           <div style={{fontSize:22, fontWeight:900, color:"#c62828"}}>⚡ FAST DELIVERY aujourd'hui</div>
           <div style={{fontSize:14, marginTop:6}}>Récupération <b>aujourd'hui</b> sans attendre la validation de Rungis. Rungis reçoit un mail (palettes + destinations), les BL partent aux magasins, c'est direct sur l'écran du chauffeur.</div>
           <div style={{marginTop:8, border:"2px solid #eee", borderRadius:10, padding:8, fontSize:15, fontWeight:800}}>
-            {(fastAsk.r ? (enlItems(fastAsk.r)||[]).filter(x=>!x.kbg).map(x=>({ code:x.code, t:x.dollies?x.dollies+" dolly":x.n?x.n+" palette(s)":"même palette" })) : built.map(L=>({ code:L.code, t:chipTxt(L) }))).map((x,i) =>
+            {(fastAsk.r ? (enlItems(fastAsk.r)||[]).filter(x=>!x.kbg).map(x=>({ code:x.code, t:x.dollies?x.dollies+(x.roll?" roll":" dolly"):x.n?x.n+" palette(s)":"même palette" })) : built.map(L=>({ code:L.code, t:chipTxt(L) }))).map((x,i) =>
               <div key={i}><span style={{display:"inline-block", minWidth:44, textAlign:"center", background:siteColor(x.code), color:"#fff", borderRadius:6, padding:"1px 6px", marginRight:8}}>{x.code}</span>{x.t}</div>)}
           </div>
           <div style={{fontSize:15, fontWeight:900, marginTop:10}}>Tes initiales</div>
@@ -3514,7 +3514,10 @@ function expParseLine(t){
   return { q: q || 1, u: u || "carton", d: s.charAt(0).toUpperCase() + s.slice(1) };
 }
 const expLineTxt = (l) => { const pl = Number(l.q) > 1; const U = EXP_UNITS.find(x=>x[0]===l.u) || [l.u, l.u]; return l.u==="unité" ? l.d : `${l.d} (${pl ? U[1] : U[0]})`; };
-const expNewColis = () => ({ id: "c"+Date.now().toString(36)+Math.random().toString(36).slice(2,5), fmt:"pal", n:1, autre:false, code:"", zone:"", frais:false, photo:"", lines:[], note:"", tgt:null });
+const expNewColis = () => ({ id: "c"+Date.now().toString(36)+Math.random().toString(36).slice(2,5), fmt:"pal", n:1, autre:false, code:"", zone:"", frais:false, photo:"", lines:[], note:"", tgt:null, contenu:"prod" });
+// v5.29 — contenu d'une palette / d'un roll express : produits (BL détaillé) ou emballages à renvoyer à Rungis (destruction)
+const EXP_CONTENUS = { prod:["🥫","Produits"], cagettes:["🪵","Cagettes en bois"], cartons:["📦","Cartons"] };
+const EXP_EMB_TXT = { cagettes:"Cagettes en bois (vides, à détruire)", cartons:"Cartons (à détruire)" };
 // v5.26 — ➕ produits ajoutés sur une palette DÉJÀ demandée (pas encore partie : avant le mail Rungis de 23h59).
 //   Les lignes s'ajoutent au BL de cette palette (enlevements/<id>/items/<i>/lines), sans nouvelle palette.
 async function expAddToPalette(tgt, lines, by){
@@ -3570,29 +3573,33 @@ function ExpressScreen({ operator, onBack }) {
   const addPaste = () => { const ls = String(pasteTxt).split(/\n|;/).map(expParseLine).filter(Boolean); addLines(ls); setPasteTxt(""); setPaste(false); };
   const setLine = (i, patch) => updC({ lines: C.lines.map((l,j) => j===i ? { ...l, ...patch } : l) });
   const delLine = (i) => updC({ lines: C.lines.filter((_,j) => j!==i) });
-  const STORES = RUNGIS_STORES;   // v5.26 — jamais PDP (entrepôt) ni les points camion
+  const STORES = [...RUNGIS_STORES, "RUNGIS"];   // v5.26 — jamais PDP (entrepôt) ni les points camion ; v5.29 — RUNGIS = retour d'emballages (cagettes bois, cartons)
+  const isEmb = (c) => c.contenu==="cagettes" || c.contenu==="cartons";
   const big = { minHeight:52, borderRadius:12, fontWeight:900, fontSize:16 };
   const chip = (on, col) => ({ padding:"10px 14px", borderRadius:12, border:"3px solid "+col, background:on?col:"#fff", color:on?"#fff":col, fontWeight:900, fontSize:16, minHeight:48 });
-  const fmtTxt = (c) => c.fmt==="add" ? (c.tgt ? `➕ sur ${c.tgt.txt}` : "➕ sur une palette déjà demandée") : c.fmt==="dolly" ? `${c.n} dolly` : `${c.n} palette${c.n>1?"s":""}${c.autre?" (autre format)":" EPAL"}`;
+  const fmtTxt = (c) => c.fmt==="add" ? (c.tgt ? `➕ sur ${c.tgt.txt}` : "➕ sur une palette déjà demandée")
+    : (c.fmt==="dolly" ? `${c.n} dolly` : c.fmt==="roll" ? `${c.n} roll${c.n>1?"s":""}` : `${c.n} palette${c.n>1?"s":""}${c.autre?" (autre format)":" EPAL"}`) + (isEmb(c) ? " · "+EXP_CONTENUS[c.contenu][1] : "");
   const problems = (c, i) => { const p = [];
     if (c.fmt==="add") { if (!c.tgt) p.push("palette à compléter"); if (!c.lines.length) p.push("contenu"); }
-    else { if (!c.code) p.push("destination"); if (!c.lines.length) p.push("contenu"); if (!c.zone) p.push("emplacement"); }
+    else { if (!c.code) p.push("destination"); if (!c.lines.length && !isEmb(c)) p.push("contenu"); if (!c.zone) p.push("emplacement"); }
     return p.length ? `Colis ${i+1} : ${p.join(", ")}` : ""; };
 
   const build = (colis) => {
     const id = "enl_" + Date.now();
     const items = colis.map((c, i) => {
-      const lines = c.lines.map(l => ({ s:"Express hors process", d:expLineTxt(l), q:Number(l.q)||0 }));
+      const emb = isEmb(c);
+      const lines = [ ...(emb ? [{ s:"Retour emballages", d:EXP_EMB_TXT[c.contenu], q:c.n }] : []), ...c.lines.map(l => ({ s:"Express hors process", d:expLineTxt(l), q:Number(l.q)||0 })) ];
       const total = lines.reduce((a,l)=>a+l.q,0); const pal = c.fmt==="pal" ? c.n : 0;
-      return { key:"X:"+id+"_"+i, code:c.code, type:"DISPATCH", express:true, ref:"", n:pal, epalN:c.autre?0:pal, epal:pal>0 && !c.autre, dollies:c.fmt==="dolly"?c.n:0,
-        kbg:false, frais:!!c.frais, zone:c.zone, mergedWith:"", origin:c.code, sid:"", total, sups:[{ name:"✍️ Express hors process", qty:total }],
+      return { key:"X:"+id+"_"+i, code:c.code, type:"DISPATCH", express:true, ref:"", n:pal, epalN:c.autre?0:pal, epal:pal>0 && !c.autre, dollies:(c.fmt==="dolly"||c.fmt==="roll")?c.n:0,
+        roll:c.fmt==="roll", contenu:emb ? EXP_CONTENUS[c.contenu][1] : "",
+        kbg:false, frais:!!c.frais, zone:c.zone, mergedWith:"", origin:c.code, sid:"", total, sups:[{ name:emb ? "♻️ Retour emballages" : "✍️ Express hors process", qty:total }],
         hasPhoto:!!c.photo, lines, note:c.note ? c.note.trim().slice(0,300) : "" };
     });
     const codes = [...new Set(items.map(x=>x.code))];
     const lieux = codes.map(code => ({ code, dolly:0, dollyZone:"", pal:items.filter(x=>x.code===code).reduce((a,x)=>a+x.n,0), dollies:items.filter(x=>x.code===code).reduce((a,x)=>a+x.dollies,0) }));
     const payload = { action:"request-enlevement", id, mode:"X", by:opBy, byKey:myKey, date:dateKey, at:Date.now(), brand:BRAND, photoGeneral:"", express:true,
       lieux: codes.map(code => ({ code, label:storeLong(code), color:siteColor(code), dolly:0, dollyZone:"froid",
-        palettes: colis.map((c,i)=>({ c, it:items[i] })).filter(x=>x.it.code===code).map(({c,it}) => ({ key:it.key, type:"DISPATCH", express:true, ref:"", n:it.n, epalN:it.epalN, dollies:it.dollies, kbg:false, cond:c.fmt==="dolly"?"dolly":"pal",
+        palettes: colis.map((c,i)=>({ c, it:items[i] })).filter(x=>x.it.code===code).map(({c,it}) => ({ key:it.key, type:"DISPATCH", express:true, ref:"", n:it.n, epalN:it.epalN, dollies:it.dollies, roll:it.roll, contenu:it.contenu, kbg:false, cond:c.fmt==="dolly"?"dolly":c.fmt==="roll"?"roll":"pal",
           frais:it.frais, zone:it.zone, mergedWith:"", sup:it.sups, lines:it.lines, total:it.total, origin:code, note:it.note, photo:c.photo||"" })) })) };
     const rec = { at:Date.now(), by:opBy, byKey:myKey, mode:"X", express:true, date:dateKey, totPal:items.reduce((a,x)=>a+x.n,0), totDol:items.reduce((a,x)=>a+x.dollies,0),
       totDolDispatch:items.reduce((a,x)=>a+x.dollies,0), totFromage:0, status:"attente-23h59", items, lieux };
@@ -3653,8 +3660,8 @@ function ExpressScreen({ operator, onBack }) {
       <div style={{padding:12, paddingBottom:170}}>
         {/* onglets colis */}
         <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:10}}>
-          {colis.map((c,i) => <button key={c.id} onClick={()=>setCur(i)} style={{ ...chip(i===cur, c.code?siteColor(c.code):"#6a1b9a"), fontSize:14 }}>{c.fmt==="add"?"➕":c.fmt==="dolly"?"🛒":"🟫"} {i+1}{c.code?" · "+c.code:""}{c.lines.length?` (${c.lines.length})`:""}</button>)}
-          <button onClick={()=>{ setColis(cs=>[...cs, { ...expNewColis(), code:C.fmt==="add"?"":C.code, zone:C.fmt==="add"?"":C.zone }]); setCur(colis.length); }} style={{ ...chip(false,"#6a1b9a"), fontSize:14 }}>＋ Autre palette / dolly</button>
+          {colis.map((c,i) => <button key={c.id} onClick={()=>setCur(i)} style={{ ...chip(i===cur, c.code?siteColor(c.code):"#6a1b9a"), fontSize:14 }}>{c.fmt==="add"?"➕":c.fmt==="dolly"?"🛞":c.fmt==="roll"?"🛒":"🟫"} {i+1}{c.code?" · "+c.code:""}{c.lines.length?` (${c.lines.length})`:""}</button>)}
+          <button onClick={()=>{ setColis(cs=>[...cs, { ...expNewColis(), code:C.fmt==="add"?"":C.code, zone:C.fmt==="add"?"":C.zone, contenu:C.fmt==="add"?"prod":(C.contenu||"prod") }]); setCur(colis.length); }} style={{ ...chip(false,"#6a1b9a"), fontSize:14 }}>＋ Autre palette / dolly</button>
         </div>
 
         <div style={{border:"3px solid "+col, borderRadius:16, padding:12, background:"#fff"}}>
@@ -3662,7 +3669,8 @@ function ExpressScreen({ operator, onBack }) {
           <div style={{fontWeight:900, fontSize:15, marginBottom:6}}>1 · Quoi ?</div>
           <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center"}}>
             <button onClick={()=>updC({fmt:"pal", tgt:null})} style={chip(C.fmt==="pal","#6d4c41")}>🟫 Nouvelle palette</button>
-            <button onClick={()=>updC({fmt:"dolly", tgt:null})} style={chip(C.fmt==="dolly","#33691e")}>🛒 Dolly</button>
+            <button onClick={()=>updC({fmt:"dolly", tgt:null})} style={chip(C.fmt==="dolly","#33691e")}>🛞 Dolly</button>
+            <button onClick={()=>updC({fmt:"roll", tgt:null})} style={chip(C.fmt==="roll","#455a64")}>🛒 Roll</button>
             <button onClick={()=>updC({fmt:"add"})} style={chip(C.fmt==="add","#e65100")}>➕ Sur une palette déjà demandée</button>
             {C.fmt!=="add" && <span style={{display:"inline-flex", alignItems:"center", gap:6, marginLeft:4}}>
               <button onClick={()=>updC({n:Math.max(1,C.n-1)})} style={{width:44,height:44,borderRadius:12,border:"2px solid #999",background:"#fff",fontSize:24,fontWeight:900}}>−</button>
@@ -3670,6 +3678,12 @@ function ExpressScreen({ operator, onBack }) {
               <button onClick={()=>updC({n:C.n+1})} style={{width:44,height:44,borderRadius:12,border:"none",background:"#6a1b9a",color:"#fff",fontSize:24,fontWeight:900}}>+</button></span>}
             {C.fmt==="pal" && <label style={{fontSize:14, fontWeight:800, display:"inline-flex", alignItems:"center", gap:6}}><input type="checkbox" checked={C.autre} onChange={e=>updC({autre:e.target.checked})} style={{width:22,height:22}}/>autre format (pas EPAL)</label>}
           </div>
+          {/* v5.29 — contenu : produits ou emballages à renvoyer à Rungis (destruction) */}
+          {C.fmt!=="add" && <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", marginTop:10}}>
+            <span style={{fontWeight:900, fontSize:14, color:"#555"}}>Contenu :</span>
+            {Object.keys(EXP_CONTENUS).map(k => <button key={k} onClick={()=>updC(k==="prod" ? {contenu:k} : {contenu:k, code:"RUNGIS"})} style={chip(C.contenu===k, k==="prod"?"#6a1b9a":"#5d4037")}>{EXP_CONTENUS[k][0]} {EXP_CONTENUS[k][1]}</button>)}
+          </div>}
+          {isEmb(C) && C.fmt!=="add" && <div style={{marginTop:6, padding:"8px 10px", borderRadius:10, background:"#efebe9", color:"#4e342e", fontWeight:800, fontSize:13}}>♻️ {EXP_EMB_TXT[C.contenu]} — renvoyé à Rungis qui les détruit. Destination RUNGIS choisie ; liste de produits facultative.</div>}
 
           {/* 2. destination — ou palette déjà demandée à compléter */}
           {C.fmt==="add" ? <>
@@ -3685,7 +3699,7 @@ function ExpressScreen({ operator, onBack }) {
                 </button>; })}
             </div>
           </> : <>
-          <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>2 · Pour quel magasin ?</div>
+          <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>2 · Pour où ?</div>
           <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
             {STORES.map(c => <button key={c} onClick={()=>updC({code:c})} style={{ ...chip(C.code===c, siteColor(c)), padding:"8px 12px", fontSize:15 }}>{c}</button>)}
           </div>
@@ -3693,7 +3707,7 @@ function ExpressScreen({ operator, onBack }) {
           {C.code && <div style={{fontSize:13, fontWeight:800, color:col, marginTop:4}}>→ {storeLong(C.code)}</div>}
 
           {/* 3. contenu */}
-          <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>3 · Qu'est-ce qu'il y a dedans ? <span style={{fontWeight:600, fontSize:12, color:"#777"}}>(c'est la liste du BL magasin)</span></div>
+          <div style={{fontWeight:900, fontSize:15, margin:"14px 0 6px"}}>3 · Qu'est-ce qu'il y a dedans ? <span style={{fontWeight:600, fontSize:12, color:"#777"}}>{isEmb(C) ? "(facultatif — emballages)" : "(c'est la liste du BL magasin)"}</span></div>
           <div style={{display:"flex", gap:6}}>
             <input value={txt} onChange={e=>setTxt(e.target.value)} onKeyDown={e=>{ if (e.key==="Enter") addTxt(); }} list="exp-sugg"
               placeholder="ex. 3 cartons huile d'olive 75cl" style={{flex:1, minWidth:0, fontSize:18, padding:"10px 12px", borderRadius:12, border:"3px solid "+(txt?col:"#ccc")}} />
@@ -3742,7 +3756,7 @@ function ExpressScreen({ operator, onBack }) {
           <div style={{fontWeight:900, fontSize:15, color:"#6a1b9a", marginBottom:6}}>⏳ Express du jour en attente de Rungis</div>
           {myExpress.map(r => { const its = enlItems(r)||[];
             return <div key={r.id} style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", padding:"6px 0", borderTop:"1px solid #e1bee7"}}>
-              <span style={{flex:"1 1 200px", fontSize:14, fontWeight:700}}>{fmtTime(r.at)} · {safeName(r.by)} · {its.map(x=>`${x.code} ${x.dollies?x.dollies+" dolly":x.n+" pal."}`).join(" · ")} · {r.status==="envoye"?"📨 envoyé à Rungis":"⏳ part à 23h59"}</span>
+              <span style={{flex:"1 1 200px", fontSize:14, fontWeight:700}}>{fmtTime(r.at)} · {safeName(r.by)} · {its.map(x=>`${x.code} ${x.dollies?x.dollies+(x.roll?" roll":" dolly"):x.n+" pal."}`).join(" · ")} · {r.status==="envoye"?"📨 envoyé à Rungis":"⏳ part à 23h59"}</span>
               <button disabled={sending} onClick={()=>setFastAsk({ r })} style={{padding:"8px 12px", borderRadius:10, border:"none", background:"#c62828", color:"#fff", fontWeight:900}}>⚡ FAST aujourd'hui</button>
             </div>; })}
         </div>}
@@ -3759,7 +3773,7 @@ function ExpressScreen({ operator, onBack }) {
           <div style={{fontSize:22, fontWeight:900, color:"#c62828"}}>⚡ FAST DELIVERY aujourd'hui</div>
           <div style={{fontSize:14, marginTop:6}}>Récupération <b>aujourd'hui</b> sans attendre la validation de Rungis. Rungis reçoit un mail (palettes + destinations), les BL partent aux magasins, c'est direct sur l'écran du chauffeur.</div>
           <div style={{marginTop:8, border:"2px solid #eee", borderRadius:10, padding:8, fontSize:15, fontWeight:800}}>
-            {(fastAsk.r ? (enlItems(fastAsk.r)||[]).map(x=>({ code:x.code, t:x.dollies?x.dollies+" dolly":x.n+" palette(s)" })) : colis.map(c=>({ code:c.code, t:fmtTxt(c) }))).map((x,i) =>
+            {(fastAsk.r ? (enlItems(fastAsk.r)||[]).map(x=>({ code:x.code, t:x.dollies?x.dollies+(x.roll?" roll":" dolly"):x.n+" palette(s)" })) : colis.map(c=>({ code:c.code, t:fmtTxt(c) }))).map((x,i) =>
               <div key={i}><span style={{display:"inline-block", minWidth:44, textAlign:"center", background:siteColor(x.code), color:"#fff", borderRadius:6, padding:"1px 6px", marginRight:8}}>{x.code}</span>{x.t}</div>)}
           </div>
           <div style={{fontSize:15, fontWeight:900, marginTop:10}}>Tes initiales</div>
