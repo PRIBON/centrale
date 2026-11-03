@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.27";
+const APP_VERSION = "v5.28";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -1643,13 +1643,25 @@ async function migrateEnlevementCodes(o, allPicking) {
   } catch(e) {}
   __enlMig = false;
 }
+// v5.28 — demande ENVOYÉE à Rungis mais jamais validée par Rungis (mail de validation pas cliqué) depuis plus d'un jour :
+//   le chauffeur ne la voit pas (il ne voit que les tournées validées) → elle ne doit plus bloquer l'écran.
+//   Elle part dans un encadré rouge « jamais validée » avec « ✅ Déjà enlevé — clôturer ».
+const enlYesterday = () => { const d = new Date(); d.setDate(d.getDate()-1); return keyOfTs(d.getTime()); };
+function isStaleEnl(r){ return !!(r && r.status==="envoye" && !r.fast && r.date && r.date < enlYesterday()); }
+// v5.28 — le chauffeur a pointé ✅/❌ toutes les palettes (enlevements/<id>/picked, appli Kelbongoo V10.79) → demande terminée
+function enlAllPicked(r){
+  const p = r && r.picked; if (!p || typeof p !== "object") return false;
+  const safe = (x) => String(x||"").replace(/[\/#\[\]\.$]/g,"_").slice(0,140);
+  const its = (enlItems(r)||[]).map((it,i) => ({ it, k:safe((it && it.key) || ("i"+i)) })).filter(x => x.it && !x.it.kbg);
+  return its.length > 0 && its.every(x => p[x.k] && p[x.k].status);
+}
 function useEnlevementsEnCours(allPicking) {
   const [v, setV] = useState([]);
   useEffect(() => {
     if (!firebaseReady) return;
     const ref = db.ref("enlevements").orderByChild("at").startAt(Date.now() - 10*86400000);
     const h = (snap) => { const o = snap.val()||{}; migrateEnlevementCodes(o, allPicking);
-      setV(Object.entries(o).map(([id,x])=>({id,...x})).filter(x => x && x.status!=="valide" && x.status!=="annule")
+      setV(Object.entries(o).map(([id,x])=>({id,...x})).filter(x => x && x.status!=="valide" && x.status!=="annule" && x.status!=="cloture" && !enlAllPicked(x))
         // v5.26 — demande d'un jour passé uniquement « via Kelbongoo » : rien à enlever pour Rungis → ne bloque plus l'écran
         .filter(x => { const its = enlItems(x)||[]; return !(x.date && x.date < todayKey() && its.length && its.every(it => it && it.kbg)); })
         .sort((a,b)=>(b.at||0)-(a.at||0))); };
@@ -1714,10 +1726,30 @@ function LockedEnlRow({ r, it, idx, myKey, onFast }) {
 
 // Accueil : récap des demandes faites, REPLIÉ par défaut (en bas).
 function DemandesEnCours({ me, allPicking }) {
-  const list = useEnlevementsEnCours(allPicking);
-  if (!list.length) return null;
+  const all = useEnlevementsEnCours(allPicking);
+  const [askEl, ask] = useAsk();
+  const stale = all.filter(isStaleEnl);
+  const list = all.filter(r => !isStaleEnl(r));
+  const meName = (me && me.name && !opIsNameless(me.name)) ? me.name : "Opérateur";
+  const cloturer = async (r) => {
+    if (!(await ask({ title:"✅ Déjà enlevé ?", text:`Demande du ${fmtDateKey(r.date||"")} ${fmtTime(r.at)} — envoyée à Rungis, jamais validée par Rungis.\n\nSi le chauffeur a bien tout pris, on la clôture : elle disparaît des demandes en cours.\n⚠️ Aucun BL magasin n'a été envoyé pour cette demande.`, ok:"✅ Clôturer — c'est enlevé" }))) return;
+    try { await db.ref(`enlevements/${r.id}`).update({ status:"cloture", cloture:{ at:Date.now(), by:meName, motif:"enlevé sans validation Rungis" } }); }
+    catch(e) { await ask({ title:"❌ Erreur", text:e.message, ok:"OK", cancel:false, color:"#c62828" }); }
+  };
+  const staleBox = stale.length > 0 && (
+    <div style={{marginTop:14, border:"3px solid #c62828", borderRadius:12, background:"#fdecea", padding:"8px 10px"}}>
+      <div style={{fontWeight:900, fontSize:15, color:"#c62828"}}>⚠️ Envoyé à Rungis mais jamais validé par Rungis — {stale.length} demande(s)</div>
+      <div style={{fontSize:12, color:"#555", marginTop:2}}>Le chauffeur ne les voit pas (il ne voit que ce que Rungis a validé). Si c'est déjà enlevé : clôturer.</div>
+      {stale.map(r => (
+        <div key={r.id} style={{marginTop:8, background:"#fff", border:"2px solid #c62828", borderRadius:10, padding:"6px 8px"}}>
+          <div style={{fontWeight:900, fontSize:13}}>🖐️ {safeName(r.by)} · {fmtDateKey(r.date||"")} {fmtTime(r.at)} · 📨 envoyé, pas validé</div>
+          <div style={{display:"flex", gap:6, flexWrap:"wrap", marginTop:4}}>{(r.lieux||[]).map(L => <span key={L.code} style={{background:siteColor(L.code), color:"#fff", borderRadius:6, padding:"2px 8px", fontWeight:900, fontSize:12}}>{L.code} : {L.pal} pal.{L.dollies?` + ${L.dollies} dolly`:""}</span>)}</div>
+          <button onClick={()=>cloturer(r)} style={{marginTop:6, width:"100%", padding:10, borderRadius:10, border:"none", background:"#2e7d32", color:"#fff", fontWeight:900, fontSize:14}}>✅ Déjà enlevé — clôturer</button>
+        </div>))}
+    </div>);
+  if (!list.length) return (staleBox || askEl) ? <>{staleBox}{askEl}</> : null;
   const nPal = list.reduce((a,r)=>a+(r.totPal||0),0);
-  return (
+  return (<>
     <details style={{marginTop:14, border:"3px solid #000", borderRadius:12, background:FLUO, padding:"8px 10px"}}>
       <summary style={{fontWeight:900, fontSize:15, cursor:"pointer", color:"#000"}}>🔒 Déjà demandé à Rungis — {list.length} demande(s) · {nPal} pal. <span style={{fontSize:12, fontWeight:700}}>(toucher pour voir)</span></summary>
       {list.map(r => isLegacyEnl(r) ? (
@@ -1734,6 +1766,7 @@ function DemandesEnCours({ me, allPicking }) {
       ))}
       <div style={{fontSize:11, marginTop:6, color:"#000"}}>Pour décocher une ligne : écran « Demander un enlèvement » (seul le demandeur peut le faire).</div>
     </details>
+    {staleBox}{askEl}</>
   );
 }
 
@@ -1785,7 +1818,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const reqs = useEnlevementsEnCours(allPicking);
   const legacyReqs = reqs.filter(isLegacyEnl);
   const wantType = mode==="D" ? "DISPATCH" : "PICKING";
-  const reqByCode = useMemo(() => { const m = {}; reqs.filter(r=>!isLegacyEnl(r)).forEach(r => (enlItems(r)||[]).forEach((it,i) => { if (it.type!==wantType || it.express || !isRungisStore(it.code)) return; (m[it.code] = m[it.code] || []).push({ r, it, i }); })); return m; }, [reqs, wantType]);
+  const reqByCode = useMemo(() => { const m = {}; reqs.filter(r=>!isLegacyEnl(r) && !isStaleEnl(r)).forEach(r => (enlItems(r)||[]).forEach((it,i) => { if (it.type!==wantType || it.express || !isRungisStore(it.code)) return; (m[it.code] = m[it.code] || []).push({ r, it, i }); })); return m; }, [reqs, wantType]);
   const DEF = { on:false, n:1, frais:false, merge:"", cond:"pal", zone:"", epalN:null }; // v5.21 — epalN null = toutes EPAL
   const g = (k) => ({ ...DEF, ...(sel[k]||{}) });
   const upd = (k, patch) => setSel(s => ({ ...s, [k]: { ...DEF, ...(s[k]||{}), ...patch } }));
