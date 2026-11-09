@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.29";
+const APP_VERSION = "v5.30";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -1808,7 +1808,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
   const [dolly, setDolly] = useState({});      // dolly FROMAGE par lieu (onglet dispatch)
   const [extra, setExtra] = useState([]);
   const [moves, setMoves] = useState({});
-  const [photos, setPhotos] = useState({});    // v5.17 : UNE photo PAR PALETTE (dispatch et picking)
+  const [photos, setPhotos] = useState({});    // v5.17 : photo par ligne · v5.30 : UNE photo PAR PALETTE → photos[clé] = [p1, p2, …]
   const [sending, setSending] = useState(false);
   const [askEl, ask] = useAsk();
   const [fastAsk, setFastAsk] = useState(null);   // v5.27 — null | { r? } (r = demande déjà faite)
@@ -1861,11 +1861,21 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
     <input id={id} type="file" accept="image/*" capture="environment" style={{display:"none"}}
       onChange={async e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
         try { onData(await compressPhoto(f, 1000, 0.7)); } catch(err) { alert("Photo : "+err.message); } }} />);
-  const photoBtnRow = (r) => { const ph = photos[r.k]; const id = "ph_"+r.k.replace(/[^\w]/g,"_");
-    return (<span style={{display:"inline-flex", alignItems:"center", gap:8}}>{photoInput(id, d=>setPhotos(p=>({ ...p, [r.k]:d })))}
-      {ph && <img src={ph} alt="" onClick={()=>document.getElementById(id).click()} style={{width:50, height:50, objectFit:"cover", borderRadius:8, border:"3px solid #2e7d32"}} />}
-      <button type="button" onClick={()=>document.getElementById(id).click()} style={{padding:"10px 12px", borderRadius:10, fontWeight:800, fontSize:13, border:"2px solid "+(ph?"#2e7d32":"#e65100"), background:ph?"#e8f5e9":"#fff", color:ph?"#2e7d32":"#e65100"}}>📷 {ph?"Reprendre la photo":"Photo de la palette"}</button>
-      {!ph && <span style={{fontSize:11, fontWeight:900, color:"#e65100", background:"#fff3e0", borderRadius:6, padding:"2px 6px"}}>photo ?</span>}</span>);
+  // v5.30 — autant de photos que de palettes (ou de dollys) sur la ligne : « 📷 Palette 1 », « 📷 Palette 2 »…
+  const phArr = (k) => { const a = photos[k]; return Array.isArray(a) ? a : (a ? [a] : []); };
+  const nPh = (r) => Math.max(1, Math.min(12, Number(g(r.k).n) || 1));
+  const phWord = (r) => (r.kind==="D" && g(r.k).cond==="dolly") ? "Dolly" : "Palette";
+  const photoBtnRow = (r) => { const n = nPh(r), arr = phArr(r.k), base = "ph_"+r.k.replace(/[^\w]/g,"_"); const w = phWord(r);
+    const okN = Array.from({length:n}, (_, j) => !!arr[j]).filter(Boolean).length;
+    return (<div style={{display:"flex", flexWrap:"wrap", alignItems:"center", gap:8, flexBasis:"100%"}}>
+      {Array.from({length:n}, (_, j) => { const ph = arr[j], id = base+"_"+j;
+        return (<span key={j} style={{display:"inline-flex", alignItems:"center", gap:6}}>
+          {photoInput(id, d=>setPhotos(p=>{ const a = [...phArr(r.k)]; a[j] = d; return { ...p, [r.k]:a }; }))}
+          {ph && <img src={ph} alt="" onClick={()=>document.getElementById(id).click()} style={{width:50, height:50, objectFit:"cover", borderRadius:8, border:"3px solid #2e7d32"}} />}
+          <button type="button" onClick={()=>document.getElementById(id).click()} style={{padding:"10px 12px", minHeight:48, borderRadius:10, fontWeight:800, fontSize:14, border:"2px solid "+(ph?"#2e7d32":"#e65100"), background:ph?"#e8f5e9":"#fff", color:ph?"#2e7d32":"#e65100"}}>📷 {n>1 ? `${w} ${j+1}` : (ph?"Reprendre la photo":`Photo ${w==="Dolly"?"du dolly":"de la palette"}`)}{n>1 && ph ? " ✓" : ""}</button>
+        </span>); })}
+      {okN < n && <span style={{fontSize:12, fontWeight:900, color:"#e65100", background:"#fff3e0", borderRadius:6, padding:"2px 6px"}}>{n>1 ? `${okN}/${n} photos` : "photo ?"}</span>}
+    </div>);
   };
   // v5.17 — emplacement OBLIGATOIRE : chambre froide / entrepôt sec
   const zoneBtns = (r) => { const s = g(r.k);
@@ -1965,7 +1975,8 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
       const zone = kbg ? "" : (tgt ? (g(tgt.k).zone||"") : (s.zone||""));
       palettes.push({ key:r.k, type:r.kind==="D"?"DISPATCH":"PICKING", ref:r.ref||"", n, epalN:epalOf(r,L), dollies, kbg, cond:r.kind==="D"?s.cond:"pal", frais:!!s.frais && !kbg, zone,
         mergedWith:tgt?("cde "+(tgt.ref||"")):"", sup:r.sups, lines:r.lines, total:r.total, origin:r.origin, sid:r.sid,
-        photo:(!kbg && (n>0 || dollies>0)) ? (photos[r.k]||"") : "" }); });
+        photo:(!kbg && (n>0 || dollies>0)) ? (phArr(r.k)[0]||"") : "",
+        photos:(!kbg && (n>0 || dollies>0)) ? phArr(r.k).slice(0, Math.max(n, dollies, 1)).filter(Boolean) : [], nPal:Math.max(n, dollies) }); });
     return { code:L.code, label:L.label, color:siteColor(L.code), dolly:(mode==="D" ? (dolly[L.code]||0) : 0), dollyZone:"froid", palettes };
   }).filter(L => L.palettes.length || L.dolly>0);
   const sumL = (L) => ({ pal:L.palettes.reduce((a,p)=>a+p.n,0), dol:L.palettes.reduce((a,p)=>a+(p.dollies||0),0), kbg:L.palettes.filter(p=>p.kbg).length });
@@ -1983,17 +1994,17 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
     const noZone = []; const noPhoto = [];
     built.forEach(L => L.palettes.forEach(p => { if (p.kbg || p.mergedWith) return;
       const nm = `${L.code} · ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+(p.ref||"—")}`;
-      if (!p.zone) noZone.push(nm); if (!p.photo) noPhoto.push(nm); }));
+      if (!p.zone) noZone.push(nm); const want = Math.max(1, p.nPal||1), got = (p.photos||[]).length; if (got < want) noPhoto.push(nm + (want>1 ? ` (${got}/${want} photos)` : "")); }));
     if (noZone.length) { await ask({ title:"📍 Où est la palette ?", text:"Indique ❄️ chambre froide ou ▣ entrepôt sec pour :\n\n• " + noZone.join("\n• "), ok:"Compris", cancel:false }); return; }
-    if (noPhoto.length && !(await ask({ title:`📷 ${noPhoto.length} palette(s) sans photo`, text:`• ${noPhoto.join("\n• ")}\n\nLa photo aide le chauffeur à trouver la palette.`, ok:"Enregistrer quand même", cancel:"Prendre les photos" }))) return;
-    const recap = built.map(L => `📍 ${L.code} : ${chipTxt(L)}\n`+L.palettes.map(p=>`   • ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref} → ${p.kbg?"via Kelbongoo (pas compté)":p.dollies?p.dollies+" dolly(s)":p.n?p.n+" pal.":"fusionné ("+p.mergedWith+")"}${p.n?(p.epalN<p.n?" · ⚠️ "+(p.n-p.epalN)+" autre format":" · EPAL"):""}${p.zone?" · "+ZONES[p.zone].short:""}${p.frais?" ❄️":""}${p.photo?" 📷":""}${p.origin!==L.code?" (déplacé de "+p.origin+")":""}`).join("\n")).join("\n");
+    if (noPhoto.length && !(await ask({ title:`📷 Photos manquantes (${noPhoto.length})`, text:`• ${noPhoto.join("\n• ")}\n\nUne photo par palette aide le chauffeur à les trouver.`, ok:"Enregistrer quand même", cancel:"Prendre les photos" }))) return;
+    const recap = built.map(L => `📍 ${L.code} : ${chipTxt(L)}\n`+L.palettes.map(p=>`   • ${p.type==="DISPATCH"?"Dispatch":"Picking cde "+p.ref} → ${p.kbg?"via Kelbongoo (pas compté)":p.dollies?p.dollies+" dolly(s)":p.n?p.n+" pal.":"fusionné ("+p.mergedWith+")"}${p.n?(p.epalN<p.n?" · ⚠️ "+(p.n-p.epalN)+" autre format":" · EPAL"):""}${p.zone?" · "+ZONES[p.zone].short:""}${p.frais?" ❄️":""}${(p.photos||[]).length?" 📷"+((p.photos||[]).length>1?"×"+p.photos.length:""):""}${p.origin!==L.code?" (déplacé de "+p.origin+")":""}`).join("\n")).join("\n");
     if (!fast && !(await ask({ title:`Enregistrer la demande ${mode==="D"?"DISPATCH":"PICKING"} ?`, text:`${recap}\n\nTOTAL : ${totPal} palette(s)${totDolD?` + ${totDolD} dolly(s)`:""}${totFro?` + ${totFro} dolly(s) fromage`:""}\n📨 Mail automatique à Rungis à 23h59.`, ok:"✅ Enregistrer la demande" }))) return;
     setSending(true);
     const id = "enl_" + Date.now();
     const payload = { action:"request-enlevement", id, mode, by:opBy, byKey:myKey, date:dateKey, at:Date.now(), brand:BRAND, photoGeneral:"", lieux:clean(built) };
     const items = []; built.forEach(L => L.palettes.forEach(p => items.push({ key:p.key, code:L.code, type:p.type, ref:p.ref||"", n:p.n, epalN:p.epalN||0, epal:p.n>0 && p.epalN===p.n, dollies:p.dollies||0, kbg:!!p.kbg, frais:!!p.frais, zone:p.zone||"",
       mergedWith:p.mergedWith||"", origin:p.origin, sid:p.sid||"", total:p.total||0, sups:(p.sup||[]).map(x=>({name:x.name, qty:x.qty})),
-      hasPhoto:!!p.photo, lines:(p.lines||[]).slice(0,500) })));
+      hasPhoto:!!p.photo, nPhotos:(p.photos||[]).length, lines:(p.lines||[]).slice(0,500) })));
     const dispClose = {}; const tsBase = Date.now(); let tsI = 0;
     built.forEach(L => L.palettes.forEach(p => { if (p.type==="DISPATCH" && dispClose[p.origin]==null) dispClose[p.origin] = tsBase + (tsI++); }));
     try {
@@ -2049,7 +2060,7 @@ function EnlevementScreen({ operator, allSessions, allPicking, onBack }) {
         <div style={{display:"flex", gap:8, marginBottom:10}}>{tab("D","🚚 DISPATCH",nD)}{tab("P","🛒 PICKING",nP)}</div>
         {legacyReqs.map(r => <div key={r.id} style={{border:"2px dashed #000", background:FLUO, borderRadius:10, padding:"6px 10px", marginBottom:8, fontSize:13, fontWeight:700}}>🧹 Ancienne demande bloquée ({fmtDateKey(r.date||"")} {fmtTime(r.at)}) <button onClick={()=>libererAncienneDemande(r, allPicking)} style={{marginLeft:8, padding:"4px 10px", borderRadius:8, border:"2px solid #b71c1c", color:"#b71c1c", background:"#fff", fontWeight:900}}>Libérer</button></div>)}
         <div style={{border:"2px solid #0b7285", borderRadius:12, padding:"8px 12px", background:"#f1fafb", fontSize:13, fontWeight:700, color:"#0b4f5c"}}>
-          📷 Une <b>photo par palette</b> + 📍 <b>❄️ chambre froide</b> ou <b>▣ entrepôt sec</b> : le chauffeur Rungis sait où aller.
+          📷 Une <b>photo par palette</b> (2 palettes = 2 photos) + 📍 <b>❄️ chambre froide</b> ou <b>▣ entrepôt sec</b> : le chauffeur Rungis sait où aller.
         </div>
         {lieux.length===0 && <div className="pal-empty">{mode==="D" ? "Aucun dispatch du jour en attente d'enlèvement." : "Aucun picking en attente d'enlèvement."}</div>}
         {lieux.map(L => { const c = siteColor(L.code); const np = L.rows.reduce((a,r)=>a+palOf(r,L),0); const nd = L.rows.reduce((a,r)=>a+dolOf(r),0); const lk = (reqByCode[L.code]||[]);
@@ -5797,12 +5808,12 @@ function InventaireVinScreen({ invId, inv, operator, onLeave }) {
    - 1 picking = 1 magasin (meta.storeCode / meta.storeLabel).
    - Produits classés PAR FOURNISSEUR (pour retrouver les produits dans l'entrepôt).
    - Scan Zebra (douchette clavier + Entrée) → popup quantité → « Valider » (ou quantité inférieure).
-   - Clôture → feu d'artifice + citation + mail récap à rr@pribon.org (action log-picking-recap).
+   - Clôture → feu d'artifice + citation + mail récap à achat@probon.fr + an@pribon.org (action log-picking-recap) — v5.30 : plus à rr@.
    ========================================================================= */
 const PICKING_COLOR = "#1565c0";      // bleu = PICKING  (vert #1a4d2e = DISPATCH)
 const PICKING_BG    = "#e3f2fd";
 const DISPATCH_COLOR = "#1a4d2e";
-const PICKING_MAIL  = "rr@pribon.org"; // destinataire fixé côté Apps Script (info seulement)
+const PICKING_MAIL  = "achat@probon.fr, an@pribon.org"; // v5.30 — plus à rr@ (destinataire fixé côté Apps Script, info seulement)
 
 const CITATIONS = [
   "Le succès, c'est la somme de petits efforts répétés jour après jour.",
@@ -6012,7 +6023,7 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
         await db.ref(`picking/${pickingId}`).update(up);
       }
     } catch(e) { alert("Erreur d'enregistrement : "+e.message); setClosing(false); return; }
-    // Mail récap à rr@pribon.org — envoyé MÊME sans écart (« picking XXX réalisé »).
+    // Mail récap (achat@probon.fr + an@pribon.org depuis v5.30, plus rr@) — envoyé MÊME sans écart (« picking XXX réalisé »).
     try {
       // Envoyé au MÊME Apps Script que la réception / verify-code (CODE_VERIFY_URL) → action log-picking-recap.
       await fetch(CODE_VERIFY_URL, { method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"},
