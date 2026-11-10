@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.30";
+const APP_VERSION = "v5.31";
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -1480,8 +1480,9 @@ function CodeLoginScreen({ moduleLabel, moduleKey, onLogin, onBack }) {
       <div className="card">
         <div className="field">
           <label>Ton code</label>
-          <input type="tel" inputMode="numeric" value={code} onChange={e=>{ setError(""); setCode(e.target.value.replace(/\D/g,"").slice(0,8)); }} placeholder="•••••" autoFocus
-            onKeyDown={e=>e.key==="Enter"&&submit()} style={{textAlign:"center", fontSize:30, letterSpacing:8, fontWeight:800}} />
+          {/* v5.31 — code CACHÉ (points), jamais affiché en clair */}
+          <input type="password" inputMode="numeric" pattern="[0-9]*" autoComplete="off" name="centrale-code" value={code} onChange={e=>{ setError(""); setCode(e.target.value.replace(/\D/g,"").slice(0,8)); }} placeholder="•••••" autoFocus
+            onKeyDown={e=>e.key==="Enter"&&submit()} style={{textAlign:"center", fontSize:30, letterSpacing:8, fontWeight:800, WebkitTextSecurity:"disc"}} />
         </div>
         <div className="keypad" style={{marginBottom:14}}>
           {["1","2","3","4","5","6","7","8","9"].map(d=><button key={d} onClick={()=>tap(d)}>{d}</button>)}
@@ -4008,12 +4009,562 @@ function ArtSuivi() {
     </svg>
   );
 }
+/* =========================================================================
+   🎄 v5.31 — SAPINS DE NOËL (commande magasin · réception)
+   Chaque magasin commande ses sapins (Cruard, MIN de Rungis) pour chaque récupération Rungis.
+   Code salarié → magasin(s) cochés dans le REGISTRE APPLI PRIBON (colonnes PRIBON BICHAT /
+   PRIBON MONTREUIL ROBESPIERRE / PRIBON TOLBIAC / KELBONGOO) via l'Apps Script « Sapins Probon Rungis ».
+   Les 4 cochées = master (voit et commande pour tous). Données : Firebase sapins/… (voir cœur de calcul).
+   Le classeur de Raimbaud n'est jamais modifié (lecture seule côté serveur).
+   ========================================================================= */
+/* ===== SAPINS 2026 — CŒUR DE CALCUL (identique Centrale · Console · Apps Script · Kelbongoo) =====
+   Données Firebase (kelbongoo-prep) :
+     sapins/n1        ← Apps Script (lecture seule du classeur de Raimbaud) : coef, ventes 2025 jour par jour, mix, CNC Kelbongoo, calendrier
+     sapins/config    ← Console : recups {AAAA-MM-JJ:{on}}, prix {ligne:{achat,vente}}, tva, mails, coefBic, miniBic
+     sapins/cmd/<d>/<mag>    commande magasin { stock:{}, reel:{}, theo:{}, by, at, auto }
+     sapins/recup/<d>        récupération chauffeur { lines:{L:{pris, rempl, sans}}, dispatch:{mag:{L:n}}, by, at, done }
+     sapins/recep/<d>/<mag>  réception { lines:{L:n}, by, chauffeur, at, note, coherent, src }
+     sapins/bl/<d>/<mag>     BL-facture Probon Rungis { num, ht, tva, ttc, url, sentAt, paid }
+   Règle (classeur Raimbaud) : besoin = coef × mix(ligne) × Σ ventes 2025 (même jour de semaine) sur la période couverte ;
+     commande théorique = max(0, arrondi.sup(besoin + stock mini − stock)). Kelbongoo : besoin = max(ventes, CNC attendu),
+     stock calculé = stock retenu précédent + réception précédente − CNC réel. */
+var SAP_LINES = [
+  { k:"M80",  o:"MORVAN",  t:"80-100",  c:"jaune",  hex:"#FFD600", ink:"#5d4a00", cr:"1er choix 80/100 (Morvan)" },
+  { k:"M100", o:"MORVAN",  t:"100-125", c:"rouge",  hex:"#E53935", ink:"#fff",    cr:"1er choix 100/125 (Morvan)" },
+  { k:"M125", o:"MORVAN",  t:"125-150", c:"vert",   hex:"#2E9E44", ink:"#fff",    cr:"1er choix 125/150 (Morvan)" },
+  { k:"M150", o:"MORVAN",  t:"150-175", c:"bleu",   hex:"#1E6FD9", ink:"#fff",    cr:"1er choix 150/175 (Morvan)" },
+  { k:"M175", o:"MORVAN",  t:"175-200", c:"blanc",  hex:"#FFFFFF", ink:"#333",    cr:"1er choix 175/200 (Morvan)" },
+  { k:"J80",  o:"JUTLAND", t:"80-100",  c:"jaune",  hex:"#FFD600", ink:"#5d4a00", cr:"Extra 80/100 (Jutland)" },
+  { k:"J100", o:"JUTLAND", t:"100-125", c:"rouge",  hex:"#E53935", ink:"#fff",    cr:"Extra 100/125 (Jutland)" },
+  { k:"J125", o:"JUTLAND", t:"125-150", c:"vert",   hex:"#2E9E44", ink:"#fff",    cr:"Extra 125/150 (Jutland)" },
+  { k:"J150", o:"JUTLAND", t:"150-175", c:"bleu",   hex:"#1E6FD9", ink:"#fff",    cr:"Extra 150/175 (Jutland)" },
+  { k:"J175", o:"JUTLAND", t:"175-200", c:"blanc",  hex:"#FFFFFF", ink:"#333",    cr:"Extra 175/200 (Jutland)" },
+  { k:"M200", o:"MORVAN",  t:"200-250", c:"orange", hex:"#FB8C00", ink:"#fff",    cr:"1er choix 200/250 (Morvan) – réservation", resa:true },
+  { k:"J200", o:"JUTLAND", t:"200-250", c:"orange", hex:"#FB8C00", ink:"#fff",    cr:"Extra 200/250 (Jutland) – réservation", resa:true }
+];
+var SAP_STORES = [
+  { k:"ROB", label:"PRIBON MONTREUIL ROBESPIERRE", short:"Montreuil", col:"PRIBON MONTREUIL ROBESPIERRE", mail:"montreuil@pribon.org", color:"#E11D48",
+    lines:["M80","M100","M125","M150","M175","J80","J100","J125","J150","J175","M200","J200"] },
+  { k:"TOL", label:"PRIBON TOLBIAC", short:"Tolbiac", col:"PRIBON TOLBIAC", mail:"tolbiac@pribon.org", color:"#0A84FF",
+    lines:["M80","M100","M125","M150","M175","J80","J100","J125","J150","J175","M200","J200"] },
+  { k:"BIC", label:"PRIBON BICHAT", short:"Bichat", col:"PRIBON BICHAT", mail:"bichat@pribon.org", color:"#FF1F8E",
+    lines:["M80","M100","M125","M150","M175","M200"] },            // Morvan uniquement
+  { k:"KBG", label:"KELBONGOO", short:"Kelbongoo", col:"KELBONGOO", mail:"", color:"#7C3AED",
+    lines:["M80","M100","M125","M150"] }                           // Morvan uniquement, sans remplacement
+];
+var SAP_MINI_DEF = { ROB:3, TOL:1, BIC:1, KBG:2 };
+function sapLine(k){ for (var i=0;i<SAP_LINES.length;i++) if (SAP_LINES[i].k===k) return SAP_LINES[i]; return null; }
+function sapStore(k){ for (var i=0;i<SAP_STORES.length;i++) if (SAP_STORES[i].k===k) return SAP_STORES[i]; return null; }
+function sapOther(k){ return k.charAt(0)==="M" ? "J"+k.slice(1) : "M"+k.slice(1); }   // même taille, autre gamme
+function sapPad(n){ return (n<10?"0":"")+n; }
+function sapIso(dt){ return dt.getFullYear()+"-"+sapPad(dt.getMonth()+1)+"-"+sapPad(dt.getDate()); }
+function sapAddDays(iso, n){ var p=String(iso).split("-"); var d=new Date(+p[0], +p[1]-1, +p[2], 12, 0, 0); d.setDate(d.getDate()+n); return sapIso(d); }
+var SAP_JOURS = ["dim.","lun.","mar.","mer.","jeu.","ven.","sam."], SAP_JOURS_L = ["dimanche","lundi","mardi","mercredi","jeudi","vendredi","samedi"];
+function sapDayFr(iso, long){ if(!iso) return ""; var p=String(iso).split("-"); var d=new Date(+p[0], +p[1]-1, +p[2], 12); return (long?SAP_JOURS_L:SAP_JOURS)[d.getDay()]+" "+p[2]+"/"+p[1]; }
+function sapNum(v){ var n=Number(v); return isFinite(n)?n:0; }
+function sapCeil(x){ return Math.ceil(x - 1e-9); }
+
+/* Dates de récupération actives (cochées dans la console), triées. Par défaut : calendrier de Raimbaud. */
+function sapActiveDates(n1, config){
+  var r = (config && config.recups) || {}, out = [], seen = {};
+  ((n1 && n1.calendar) || []).forEach(function(c){ if (!c || !c.date) return; var o = r[c.date]; if (o && o.on === false) return; if (!seen[c.date]) { seen[c.date]=1; out.push(c.date); } });
+  Object.keys(r).forEach(function(d){ if (r[d] && r[d].on === true && !seen[d]) { seen[d]=1; out.push(d); } });
+  return out.sort();
+}
+/* Période couverte par une récup : du jour J jusqu'à la veille de la récup suivante (dernière : fin du calendrier). */
+function sapPeriod(n1, config, date){
+  var act = sapActiveDates(n1, config), i = act.indexOf(date);
+  var au = (i>=0 && i<act.length-1) ? sapAddDays(act[i+1], -1) : ((n1 && n1.finSaison) || sapAddDays(date, 2));
+  return { du:date, au:au, last: i===act.length-1, prev: i>0 ? act[i-1] : null, next: (i>=0&&i<act.length-1)?act[i+1]:null };
+}
+/* Échéance de commande : la veille de la récup à minuit (23:59:59). */
+function sapDeadline(date){ var v = sapAddDays(date, -1).split("-"); return new Date(+v[0], +v[1]-1, +v[2], 23, 59, 59).getTime(); }
+/* Dates 2025 de référence correspondant à la période (même jour de semaine, ligne « Réf. 2025 »). */
+function sapRefRange(n1, per){
+  var d = (n1 && n1.dates) || [], r = (n1 && n1.ref) || [], a = "", b = "";
+  for (var i=0;i<d.length;i++){ if (d[i]>=per.du && d[i]<=per.au){ if(!a) a=r[i]; b=r[i]; } }
+  return { du:a, au:b };
+}
+function sapSumDays(n1, arr, per){ var d=(n1&&n1.dates)||[], s=0; for (var i=0;i<d.length;i++) if (d[i]>=per.du && d[i]<=per.au) s += sapNum(arr && arr[i]); return s; }
+
+/* Plan (proposition) d'un magasin pour une récup. cmds = sapins/cmd, receps = sapins/recep (pour le stock Kelbongoo). */
+function sapPlan(n1, config, date, sk, cmds, receps){
+  var st = sapStore(sk); if (!st || !n1) return null;
+  var per = sapPeriod(n1, config, date), coef = sapNum(n1.coef) || 1;
+  var src = sk === "BIC" ? "TOL" : sk, S = n1[src] || {};
+  var totP = sapSumDays(n1, S.tot, per);
+  var cal = null; ((n1.calendar)||[]).forEach(function(c){ if (c && c.date===date) cal=c; });
+  var mini = per.last ? 0 : (sk==="BIC" ? sapNum(config && config.miniBic != null ? config.miniBic : SAP_MINI_DEF.BIC)
+                                        : (cal && cal.mini && cal.mini[sk]!=null ? sapNum(cal.mini[sk]) : sapNum((n1.minis||{})[sk]!=null?(n1.minis||{})[sk]:SAP_MINI_DEF[sk])));
+  var coefBic = sk==="BIC" ? (config && config.coefBic!=null ? sapNum(config.coefBic) : 1) : 1;
+  var cmd = ((cmds||{})[date]||{})[sk] || {};
+  var stockKbg = sk==="KBG" ? sapKbgStock(n1, config, date, cmds, receps) : null;
+  var lines = st.lines.map(function(k){
+    var L = sapLine(k), o = { k:k, resa:!!L.resa, ventes:0, besoin:0, mini:L.resa?0:mini };
+    if (!L.resa){
+      o.ventes = sapSumDays(n1, (S.day||{})[k], per) * (sk==="BIC"?coefBic:1);
+      o.besoin = coef * sapNum((S.mix||{})[k]) * totP * coefBic;
+      if (sk==="KBG"){ var att = 0; Object.keys(n1.cnc||{}).forEach(function(d){ if (d>=per.du && d<=per.au) att += sapNum(((n1.cnc[d]||{}).att||{})[k]); }); o.cnc = att; o.besoin = Math.max(o.besoin, att); }
+    }
+    var stk = (cmd.stock && cmd.stock[k]!=null && cmd.stock[k]!=="") ? sapNum(cmd.stock[k]) : null;
+    if (sk==="KBG"){ o.stockCalc = stockKbg ? sapNum(stockKbg[k]) : 0; o.stockUsed = stk!=null ? stk : o.stockCalc; }
+    else o.stockUsed = stk!=null ? stk : 0;
+    o.stockSaisi = stk;
+    o.theo = L.resa ? 0 : Math.max(0, sapCeil(o.besoin + o.mini - o.stockUsed));
+    o.reel = (cmd.reel && cmd.reel[k]!=null && cmd.reel[k]!=="") ? sapNum(cmd.reel[k]) : null;
+    return o;
+  });
+  return { date:date, store:sk, per:per, ref:sapRefRange(n1, per), coef:coef, mini:mini, deadline:sapDeadline(date), lines:lines, cmd:cmd };
+}
+/* Stock calculé Kelbongoo (comme le classeur) : stock retenu précédent + réception précédente − CNC réel de la période précédente. */
+function sapKbgStock(n1, config, date, cmds, receps){
+  var act = sapActiveDates(n1, config), out = {}, keys = sapStore("KBG").lines;
+  keys.forEach(function(k){ out[k]=0; });
+  for (var i=0;i<act.length && act[i]<date;i++){
+    var d = act[i], per = sapPeriod(n1, config, d), c = ((cmds||{})[d]||{}).KBG || {}, rc = ((receps||{})[d]||{}).KBG || {};
+    keys.forEach(function(k){
+      var retenu = (c.stock && c.stock[k]!=null && c.stock[k]!=="") ? sapNum(c.stock[k]) : out[k];
+      var recu = rc.lines ? sapNum(rc.lines[k]) : 0, reel = 0;
+      Object.keys(n1.cnc||{}).forEach(function(x){ if (x>=per.du && x<=per.au) reel += sapNum(((n1.cnc[x]||{}).reel||{})[k]); });
+      out[k] = retenu + recu - reel;
+    });
+  }
+  return out;
+}
+/* Quantité commandée finale d'une ligne (réelle si saisie, sinon théorique). */
+function sapQty(plan, k){ for (var i=0;i<plan.lines.length;i++){ var o=plan.lines[i]; if (o.k===k) return o.reel!=null ? o.reel : o.theo; } return 0; }
+/* Totaux à enlever chez Cruard pour une date : { L: { tot, par:{mag:n} } } */
+function sapRecap(n1, config, date, cmds, receps){
+  var out = {};
+  SAP_LINES.forEach(function(L){ out[L.k] = { tot:0, par:{} }; });
+  SAP_STORES.forEach(function(s){
+    var c = ((cmds||{})[date]||{})[s.k]; var p = sapPlan(n1, config, date, s.k, cmds, receps); if (!p) return;
+    var validated = !!(c && (c.at || c.auto));
+    p.lines.forEach(function(o){ var q = validated ? (o.reel!=null?o.reel:o.theo) : 0; if (q>0){ out[o.k].tot += q; out[o.k].par[s.k] = q; } });
+  });
+  return out;
+}
+/* Répartition au prorata (méthode des plus forts restes). want = {mag:n}, total = n disponibles */
+function sapProrata(want, total){
+  var ks = Object.keys(want).filter(function(k){ return sapNum(want[k])>0; }), W = 0, res = {}, rest = [];
+  ks.forEach(function(k){ W += sapNum(want[k]); });
+  if (!W || total<=0){ ks.forEach(function(k){ res[k]=0; }); return res; }
+  var given = 0;
+  ks.forEach(function(k){ var x = total*sapNum(want[k])/W; res[k]=Math.floor(x); given+=res[k]; rest.push([k, x-res[k], sapNum(want[k])]); });
+  rest.sort(function(a,b){ return (b[1]-a[1]) || (b[2]-a[2]); });
+  for (var i=0; given<total && rest.length; i=(i+1)%rest.length){ res[rest[i][0]]++; given++; }
+  return res;
+}
+/* Dispatch : ce que chaque magasin reçoit, d'après ce que le chauffeur a réellement pris (+ remplacements). */
+function sapDispatch(recap, recupLines){
+  var disp = {}; SAP_STORES.forEach(function(s){ disp[s.k] = {}; });
+  var manque = {};   // mag -> L -> manquant
+  SAP_LINES.forEach(function(L){
+    var r = recap[L.k] || { tot:0, par:{} }, rl = (recupLines||{})[L.k] || {};
+    var pris = rl.pris!=null ? sapNum(rl.pris) : r.tot;
+    var a = sapProrata(r.par, pris);
+    Object.keys(r.par).forEach(function(m){ var g = a[m]||0; if (g) disp[m][L.k] = (disp[m][L.k]||0) + g; var miss = sapNum(r.par[m]) - g; if (miss>0) (manque[m]=manque[m]||{})[L.k]=miss; });
+  });
+  // remplacements : même taille dans l'autre gamme, pour les magasins (jamais Kelbongoo)
+  SAP_LINES.forEach(function(L){
+    var rl = (recupLines||{})[L.k] || {}, n = sapNum(rl.rempl); if (!n || rl.sans) return;
+    var want = {}; Object.keys(manque).forEach(function(m){ if (m!=="KBG" && manque[m][L.k]) want[m]=manque[m][L.k]; });
+    if (!Object.keys(want).length) return;
+    var a = sapProrata(want, n), o = sapOther(L.k);
+    Object.keys(a).forEach(function(m){ if (a[m]) disp[m][o] = (disp[m][o]||0) + a[m]; });
+  });
+  return disp;
+}
+function sapSum(obj){ var s=0; Object.keys(obj||{}).forEach(function(k){ s+=sapNum(obj[k]); }); return s; }
+function sapEur(n){ return (Math.round(sapNum(n)*100)/100).toFixed(2).replace(".", ",")+" €"; }
+/* Montant BL-facture (prix de vente magasin × quantités reçues). */
+function sapFacture(config, lines){
+  var prix = (config && config.prix) || {}, tva = sapNum(config && config.tva != null ? config.tva : 10), ht = 0, det = [];
+  Object.keys(lines||{}).forEach(function(k){ var q = sapNum(lines[k]); if (!q) return; var pu = sapNum((prix[k]||{}).vente); ht += q*pu; det.push({ k:k, q:q, pu:pu, mt:q*pu }); });
+  ht = Math.round(ht*100)/100; var tv = Math.round(ht*tva)/100;
+  return { ht:ht, tvaRate:tva, tva:tv, ttc:Math.round((ht+tv)*100)/100, lines:det };
+}
+var SAP_CITATIONS = [
+  "« Noël n'est pas un jour, c'est un état d'esprit. » — Calvin Coolidge",
+  "« Le plus beau cadeau, c'est un sapin bien commandé. » — le Père Noël (probablement)",
+  "« Ho ho ho ! Toute l'équipe est sur la liste des gentils cette année. »",
+  "« La magie de Noël, c'est quand tout arrive au bon endroit, au bon moment. »",
+  "« Un sapin, des guirlandes, et une équipe au top : Noël peut commencer ! »",
+  "« Noël, c'est la saison où l'on allume les cœurs… et les guirlandes. »",
+  "« Bravo ! Les lutins de Rungis prennent le relais. »",
+  "« Il n'y a pas de petit sapin, il n'y a que de grands sourires. »"
+];
+
+let SAPIN_URL = "";   // URL /exec de l'Apps Script « Sapins Probon Rungis » — lue dans Firebase sapins/meta/url
+try { if (firebaseReady) db.ref("sapins/meta/url").on("value", s => { const u = s.val(); if (u) SAPIN_URL = String(u); }); } catch(_){}
+async function sapinPost(body){
+  if (!SAPIN_URL) throw new Error("Serveur Sapins pas encore installé (Console › 🎄 Sapins › URL du serveur).");
+  const r = await fetch(SAPIN_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(body) });
+  return await r.json();
+}
+function sapinKick(){ try { if (SAPIN_URL) fetch(SAPIN_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"sapin-kick" }) }).catch(()=>{}); } catch(e){} }
+const SAPIN_SESSION_KEY = "centrale_sapin_sess";
+function sapinSessGet(){ try { const s = JSON.parse(localStorage.getItem(SAPIN_SESSION_KEY)||"null"); if (s && Date.now()-(s.at||0) < CODE_SESSION_TTL_MS) return s; } catch(e){} return null; }
+function sapinSessSet(s){ try { if (s) localStorage.setItem(SAPIN_SESSION_KEY, JSON.stringify({ ...s, at:Date.now() })); else localStorage.removeItem(SAPIN_SESSION_KEY); } catch(e){} }
+function useSapinData(){
+  const [d, setD] = useState({ n1:undefined, config:{}, cmd:{}, recup:{}, recep:{}, bl:{} });
+  useEffect(() => {
+    if (!firebaseReady) { setD(x => ({ ...x, n1:null })); return; }
+    const offs = [];
+    [["n1","sapins/n1"],["config","sapins/config"],["cmd","sapins/cmd"],["recup","sapins/recup"],["recep","sapins/recep"],["bl","sapins/bl"]].forEach(([k,p]) => {
+      const ref = db.ref(p); const cb = s => setD(x => ({ ...x, [k]: s.val() || (k==="n1" ? null : {}) })); ref.on("value", cb); offs.push(() => ref.off("value", cb));
+    });
+    return () => offs.forEach(f => f());
+  }, []);
+  return d;
+}
+const sapFmtH = (ms) => { if (ms <= 0) return "0 min"; const h = Math.floor(ms/3600e3), m = Math.floor((ms%3600e3)/60e3); return h>0 ? `${h} h ${String(m).padStart(2,"0")}` : `${m} min`; };
+function useNow(ms){ const [n, setN] = useState(Date.now()); useEffect(() => { const t = setInterval(() => setN(Date.now()), ms||30000); return () => clearInterval(t); }, [ms]); return n; }
+
+/* ---------- Illustrations ---------- */
+function ArtSapin({ h }) {
+  return (
+    <svg viewBox="0 0 160 120" style={{height:h||104, width:"auto", maxWidth:"100%"}} aria-hidden="true">
+      <defs><linearGradient id="sapSky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#0d2b52"/><stop offset="1" stopColor="#1d4f8a"/></linearGradient></defs>
+      <rect x="2" y="2" width="156" height="116" rx="16" fill="url(#sapSky)"/>
+      {[[18,16],[48,10],[140,20],[118,8],[150,52],[10,48],[84,14]].map(([x,y],i)=><circle key={i} cx={x} cy={y} r={i%2?1.6:2.2} fill="#fff" opacity=".9"/>)}
+      <path d="M2 100 Q40 86 80 98 T158 94 V118 H2 Z" fill="#f4f8ff"/>
+      {/* sapin */}
+      <polygon points="112,20 136,56 124,56 142,82 126,82 146,104 78,104 98,82 82,82 100,56 88,56" fill="#1f7a3a"/>
+      <rect x="106" y="104" width="12" height="9" fill="#6d4c2e"/>
+      <polygon points="112,12 115,19 122,19 116,23 118,30 112,26 106,30 108,23 102,19 109,19" fill="#FFD600"/>
+      {[[104,50,"#E53935"],[121,62,"#FFD600"],[98,78,"#1E6FD9"],[128,90,"#E53935"],[112,94,"#FFD600"],[93,96,"#fff"]].map(([x,y,c],i)=><circle key={i} cx={x} cy={y} r="3.6" fill={c}/>)}
+      <path d="M92 66 Q112 74 132 64" stroke="#FFD600" strokeWidth="2" fill="none"/>
+      {/* Père Noël */}
+      <ellipse cx="50" cy="92" rx="25" ry="20" fill="#d32f2f"/>
+      <rect x="27" y="86" width="46" height="7" fill="#212121"/><rect x="45" y="85" width="10" height="9" rx="2" fill="#FFD600"/>
+      <circle cx="50" cy="60" r="16" fill="#ffd7b5"/>
+      <path d="M33 62 Q50 98 67 62 Q60 70 50 70 Q40 70 33 62 Z" fill="#fff"/>
+      <path d="M41 70 Q50 64 59 70 Q50 74 41 70 Z" fill="#fff" stroke="#eee"/>
+      <circle cx="44" cy="57" r="2.2" fill="#3e2723"/><circle cx="56" cy="57" r="2.2" fill="#3e2723"/>
+      <path d="M43 52 q2-2 4 0 M53 52 q2-2 4 0" stroke="#fff" strokeWidth="2" fill="none"/>
+      <circle cx="50" cy="62" r="3.4" fill="#ef8a80"/>
+      <circle cx="41" cy="63" r="3" fill="#f7a8a0" opacity=".7"/><circle cx="59" cy="63" r="3" fill="#f7a8a0" opacity=".7"/>
+      <path d="M45 67 Q50 71 55 67" stroke="#b71c1c" strokeWidth="1.8" fill="none" strokeLinecap="round"/>
+      <path d="M33 50 Q50 18 70 40 L72 50 Z" fill="#d32f2f"/><rect x="32" y="47" width="38" height="7" rx="3.5" fill="#fff"/>
+      <circle cx="73" cy="40" r="5" fill="#fff"/>
+      <path d="M26 84 Q14 70 20 58" stroke="#d32f2f" strokeWidth="8" fill="none" strokeLinecap="round"/><circle cx="20" cy="56" r="5" fill="#fff"/>
+      <path d="M74 86 Q86 80 92 74" stroke="#d32f2f" strokeWidth="8" fill="none" strokeLinecap="round"/><circle cx="93" cy="73" r="5" fill="#fff"/>
+    </svg>
+  );
+}
+/* Père Noël + traîneau + neige : bravo ! (commande / réception validée) */
+function SapinCelebration({ title, sub, onClose }) {
+  const [q] = useState(() => SAP_CITATIONS[Math.floor(Math.random()*SAP_CITATIONS.length)]);
+  useEffect(() => { const t = setTimeout(() => onClose && onClose(), 9000); return () => clearTimeout(t); }, []);
+  const flakes = useMemo(() => Array.from({length:46}, (_, i) => ({ l:Math.random()*100, d:4+Math.random()*6, s:6+Math.random()*12, del:-Math.random()*8, o:.5+Math.random()*.5 })), []);
+  return (
+    <div onClick={onClose} style={{position:"fixed", inset:0, zIndex:2000, background:"radial-gradient(ellipse at top, #1d4f8a, #08162c)", overflow:"hidden", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", color:"#fff", textAlign:"center", padding:20}}>
+      <style>{`@keyframes sapSnow{from{transform:translateY(-10vh)}to{transform:translateY(110vh)}}
+        @keyframes sapSleigh{0%{transform:translate(-60vw,10vh) rotate(-6deg)}50%{transform:translate(0,-6vh) rotate(3deg)}100%{transform:translate(70vw,-18vh) rotate(-4deg)}}
+        @keyframes sapPop{0%{transform:scale(.4);opacity:0}60%{transform:scale(1.08);opacity:1}100%{transform:scale(1)}}`}</style>
+      {flakes.map((f,i) => <div key={i} style={{position:"absolute", top:0, left:f.l+"%", fontSize:f.s, opacity:f.o, animation:`sapSnow ${f.d}s linear ${f.del}s infinite`}}>❄</div>)}
+      <div style={{position:"absolute", top:"22%", left:"50%", marginLeft:-110, animation:"sapSleigh 5.5s ease-in-out infinite"}}>
+        <svg viewBox="0 0 220 90" width="220" aria-hidden="true">
+          <path d="M8 40 Q4 30 14 30 L38 30" stroke="#8d6e63" strokeWidth="4" fill="none"/>
+          <g fill="#8d6e63"><ellipse cx="30" cy="44" rx="16" ry="8"/><rect x="18" y="48" width="3" height="14"/><rect x="38" y="48" width="3" height="14"/><circle cx="46" cy="38" r="6"/><path d="M44 31 l-4 -9 M48 31 l4 -9" stroke="#8d6e63" strokeWidth="2"/></g>
+          <circle cx="51" cy="38" r="2.6" fill="#e53935"/>
+          <path d="M50 44 L104 52" stroke="#FFD600" strokeWidth="2"/>
+          <path d="M100 40 h80 q16 0 16 16 v6 h-96 z" fill="#c62828"/><path d="M96 70 h104 q10 0 12 -8" stroke="#FFD600" strokeWidth="4" fill="none"/>
+          <circle cx="150" cy="26" r="11" fill="#ffd7b5"/><path d="M139 30 q11 22 22 0" fill="#fff"/><path d="M139 22 q12 -22 24 -2 z" fill="#d32f2f"/><circle cx="164" cy="19" r="3.5" fill="#fff"/>
+          <rect x="166" y="20" width="18" height="20" rx="3" fill="#2e7d32"/><rect x="172" y="20" width="4" height="20" fill="#FFD600"/>
+          <polygon points="122,14 132,34 112,34" fill="#1f7a3a"/><polygon points="122,22 134,42 110,42" fill="#1f7a3a"/>
+        </svg>
+      </div>
+      <div style={{animation:"sapPop .6s ease-out both", marginTop:120}}>
+        <div style={{fontSize:56, lineHeight:1}}>🎅🎄</div>
+        <div style={{fontSize:30, fontWeight:900, marginTop:10}}>{title}</div>
+        {sub && <div style={{fontSize:17, opacity:.9, marginTop:6}}>{sub}</div>}
+        <div style={{fontSize:18, fontStyle:"italic", marginTop:18, maxWidth:520, lineHeight:1.4, background:"rgba(255,255,255,.12)", borderRadius:14, padding:"12px 16px"}}>{q}</div>
+        <div style={{fontSize:13, opacity:.7, marginTop:16}}>(toucher pour fermer)</div>
+      </div>
+    </div>
+  );
+}
+function SapChip({ k, big }) {
+  const L = sapLine(k); if (!L) return null;
+  return <span style={{display:"inline-block", background:L.hex, color:L.ink, border:L.c==="blanc"?"2px solid #9e9e9e":"2px solid transparent", borderRadius:9, padding:big?"5px 10px":"2px 8px", fontWeight:900, fontSize:big?15:12, whiteSpace:"nowrap"}}>{L.t} {L.c.toUpperCase()}</span>;
+}
+function SapStepper({ value, onChange, disabled, color, placeholder }) {
+  const v = value===""||value==null ? "" : Number(value);
+  const set = (x) => onChange(x===""?"":Math.max(0, Math.min(999, Number(x)||0)));
+  return (
+    <div style={{display:"flex", alignItems:"center", gap:4}}>
+      <button type="button" disabled={disabled} onClick={()=>set(v===""?0:Math.max(0,v-1))} style={{width:40, height:42, borderRadius:10, fontSize:22, fontWeight:900, background:"#f0f0f0", color:"#333"}}>−</button>
+      <input type="tel" inputMode="numeric" disabled={disabled} value={v} placeholder={placeholder||""} onFocus={e=>e.target.select()}
+        onChange={e=>set(e.target.value.replace(/\D/g,"")===""?"":e.target.value.replace(/\D/g,""))}
+        style={{width:52, height:42, textAlign:"center", fontSize:20, fontWeight:900, border:`2px solid ${color||"#ccc"}`, borderRadius:10, background:disabled?"#f5f5f5":"#fff"}} />
+      <button type="button" disabled={disabled} onClick={()=>set(v===""?1:v+1)} style={{width:40, height:42, borderRadius:10, fontSize:22, fontWeight:900, background:"#e8f5e9", color:"#1a4d2e"}}>+</button>
+    </div>
+  );
+}
+
+/* ---------- Connexion par code (caché) ---------- */
+function SapinLogin({ onLogin, onBack }) {
+  const [code, setCode] = useState(""), [busy, setBusy] = useState(false), [err, setErr] = useState("");
+  const submit = async () => {
+    if (!/^\d{3,8}$/.test(code)) { setErr("Entre ton code (3 à 8 chiffres)."); return; }
+    setBusy(true); setErr("");
+    try {
+      const j = await sapinPost({ action:"sapin-login", code });
+      if (!j || !j.ok) { setErr(j && j.error==="inconnu" ? "Code non reconnu. Vérifie auprès du gérant." : ("Connexion impossible : " + ((j && j.error) || "serveur"))); return; }
+      if (!j.stores || !j.stores.length) { setErr(`Bonjour ${j.name} : ton code n'est rattaché à aucun magasin pour les sapins (colonnes PRIBON BICHAT / MONTREUIL ROBESPIERRE / TOLBIAC / KELBONGOO du registre).`); return; }
+      const s = { name:j.name, stores:j.stores, master:!!j.master, cur:j.stores[0] };
+      sapinSessSet(s); onLogin(s);
+    } catch(e) { setErr(e.message); }
+    finally { setBusy(false); setCode(""); }
+  };
+  return (
+    <div className="screen-center" style={{background:"linear-gradient(#0d2b52,#1d4f8a)", minHeight:"100vh"}}>
+      <ArtSapin h={120}/>
+      <div className="logo" style={{color:"#fff", marginTop:10}}>🎄 Sapins de Noël</div>
+      <div className="tag" style={{color:"#dbe7ff"}}>Commande et réception des sapins · ton code te relie à ton magasin</div>
+      <div className="card">
+        <div className="field"><label>Ton code</label>
+          <div style={{textAlign:"center", fontSize:34, letterSpacing:10, fontWeight:900, minHeight:46, border:"1.5px solid #ddd", borderRadius:8, padding:"4px 0", color:code?"#1a1a1a":"#ccc"}}>{code ? "•".repeat(code.length) : "• • • •"}</div>
+        </div>
+        <div className="keypad" style={{marginBottom:14}}>
+          {["1","2","3","4","5","6","7","8","9"].map(d => <button key={d} onClick={()=>{ setErr(""); setCode(v=>v.length<8?v+d:v); }}>{d}</button>)}
+          <button className="del" onClick={()=>setCode(v=>v.slice(0,-1))}>⌫</button>
+          <button onClick={()=>setCode(v=>v.length<8?v+"0":v)}>0</button>
+          <button className="act" style={{background:"#c62828", borderColor:"#c62828"}} onClick={submit} disabled={busy}>✓</button>
+        </div>
+        {err && <div style={{color:"#c62828", background:"#ffebee", padding:10, borderRadius:6, fontSize:13, marginBottom:10}}>{err}</div>}
+        <button className="btn-primary" style={{background:"#c62828"}} onClick={submit} disabled={busy || !code}>{busy ? "Vérification…" : "🎅 Entrer"}</button>
+        <button className="btn-secondary" onClick={onBack}>← Retour au menu</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Module ---------- */
+function SapinScreen({ onBack }) {
+  const [sess, setSess] = useState(() => sapinSessGet());
+  const [view, setView] = useState("home");
+  const [cele, setCele] = useState(null);
+  const D = useSapinData();
+  useEffect(() => { window.__centraleModule = "sapin"; return () => { window.__centraleModule = null; }; }, []);
+  if (!sess) return <SapinLogin onLogin={s=>{ setSess(s); setView("home"); }} onBack={onBack} />;
+  const sk = sess.cur, st = sapStore(sk);
+  const logout = () => { sapinSessSet(null); setSess(null); };
+  const switchStore = (k) => { const s = { ...sess, cur:k }; sapinSessSet(s); setSess(s); };
+  const ready = D.n1 !== undefined;
+  const act = ready && D.n1 ? sapActiveDates(D.n1, D.config) : [];
+  const now = Date.now();
+  const nextD = act.find(d => sapDeadline(d) > now) || null;
+  const per = nextD ? sapPeriod(D.n1, D.config, nextD) : null;
+  const header = (
+    <div style={{background:`linear-gradient(135deg, ${st.color}, #0d2b52)`, color:"#fff", padding:"16px 16px 18px", position:"sticky", top:0, zIndex:10}}>
+      <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", gap:8}}>
+        <button className="header-btn" onClick={()=> view==="home" ? onBack() : setView("home")}>← {view==="home"?"Menu":"Sapins"}</button>
+        <span style={{fontSize:12, opacity:.9}}>🎅 {sess.name}{sess.master?" · master":""}</span>
+        <button className="header-btn" onClick={logout}>Sortir</button>
+      </div>
+      <div style={{fontSize:26, fontWeight:900, marginTop:10, lineHeight:1.1, letterSpacing:.3}}>{st.label}</div>
+      <div style={{fontSize:14, opacity:.95, marginTop:4}}>🎄 {per ? <>Commande pour la récupération du <b>{sapDayFr(nextD, true)}</b> · couvre du {sapDayFr(per.du)} au {sapDayFr(per.au)}</> : "Pas de récupération à venir"}</div>
+      {(sess.stores.length > 1 || sess.master) && <div style={{display:"flex", gap:6, flexWrap:"wrap", marginTop:10}}>
+        {(sess.master ? SAP_STORES.map(s=>s.k) : sess.stores).map(k => <button key={k} onClick={()=>switchStore(k)} style={{background:k===sk?"#fff":"rgba(255,255,255,.18)", color:k===sk?sapStore(k).color:"#fff", borderRadius:16, padding:"5px 12px", fontWeight:800, fontSize:13}}>{sapStore(k).short}</button>)}
+      </div>}
+    </div>
+  );
+  return (
+    <div className="app" style={{background:"#f6f8fb", minHeight:"100vh"}}>
+      {header}
+      {!ready && <div style={{padding:30, textAlign:"center"}}>Chargement…</div>}
+      {ready && !D.n1 && <div style={{margin:16, padding:16, background:"#fff3e0", borderRadius:12}}>⚠️ Les données sapins ne sont pas encore prêtes (serveur Sapins à installer — Console › 🎄 Sapins).</div>}
+      {ready && D.n1 && view==="home" && <SapinHome D={D} sk={sk} act={act} onGo={setView} sess={sess} />}
+      {ready && D.n1 && view==="cmd" && <SapinCommande D={D} sk={sk} act={act} sess={sess} onDone={(t)=>{ setCele(t); setView("home"); }} />}
+      {ready && D.n1 && view==="recep" && <SapinReception D={D} sk={sk} act={act} sess={sess} onDone={(t)=>{ setCele(t); setView("home"); }} />}
+      {cele && <SapinCelebration title={cele.title} sub={cele.sub} onClose={()=>setCele(null)} />}
+    </div>
+  );
+}
+function sapCmdStatus(D, d, sk){ const c = ((D.cmd||{})[d]||{})[sk]; if (!c) return { k:"none", t:"⏳ pas encore commandé", col:"#e65100" }; if (c.auto && !c.at) return { k:"auto", t:"🤖 proposition auto (pas validée)", col:"#6d4c41" }; return { k:"ok", t:"✅ commandé par "+(c.by||"?"), col:"#2e7d32" }; }
+function SapinHome({ D, sk, act, onGo, sess }) {
+  const now = useNow(30000);
+  const nextD = act.find(d => sapDeadline(d) > now);
+  const recepTodo = act.filter(d => d <= todayKey() && sapCmdTotal(D, d, sk) > 0 && !(((D.recep||{})[d]||{})[sk]||{}).at);
+  const Big = ({ ic, t, sub, col, onClick, badge }) => (
+    <button onClick={onClick} style={{display:"flex", alignItems:"center", gap:14, width:"100%", textAlign:"left", background:"#fff", border:`3px solid ${col}`, borderRadius:20, padding:"18px 16px", marginBottom:12, boxShadow:"0 3px 10px rgba(0,0,0,.06)"}}>
+      <span style={{fontSize:46}}>{ic}</span>
+      <span style={{flex:1}}><span style={{display:"block", fontSize:23, fontWeight:900, color:"#1a1a1a"}}>{t}</span><span style={{display:"block", fontSize:14, color:"#555", marginTop:3}}>{sub}</span></span>
+      {badge!=null && <span style={{background:col, color:"#fff", borderRadius:14, padding:"4px 10px", fontWeight:900, fontSize:18}}>{badge}</span>}
+    </button>
+  );
+  const dl = nextD ? sapDeadline(nextD) - now : 0;
+  const stN = nextD ? sapCmdStatus(D, nextD, sk) : null;
+  return (
+    <div style={{padding:16}}>
+      {nextD && <div style={{background:dl<6*3600e3?"#fdecea":"#fff8e1", border:`2px solid ${dl<6*3600e3?"#c62828":"#f9a825"}`, borderRadius:16, padding:"12px 14px", marginBottom:14}}>
+        <div style={{fontSize:18, fontWeight:900, color:dl<6*3600e3?"#c62828":"#8d6e00"}}>⏰ Jusqu'à minuit il reste <span style={{fontSize:24}}>{sapFmtH(dl)}</span> pour passer commande</div>
+        <div style={{fontSize:14, marginTop:4}}>Récupération Rungis : <b>{sapDayFr(nextD, true)}</b> · commande avant le {sapDayFr(sapAddDays(nextD,-1), true)} 23h59 · <b style={{color:stN.col}}>{stN.t}</b></div>
+      </div>}
+      <Big ic="📝" t="Commande" sub="Proposition calculée sur les ventes 2025 · tu valides ou tu modifies" col="#c62828" onClick={()=>onGo("cmd")} badge={stN && stN.k!=="ok" ? "!" : null} />
+      <Big ic="📦" t="Réception" sub="Compter les sapins réellement reçus (obligatoire)" col="#1565c0" onClick={()=>onGo("recep")} badge={recepTodo.length || null} />
+      <div style={{background:"#fff", borderRadius:16, padding:14, marginTop:6}}>
+        <div style={{fontWeight:900, marginBottom:8}}>📅 Les récupérations Rungis</div>
+        {act.map(d => { const s = sapCmdStatus(D, d, sk), r = (((D.recep||{})[d]||{})[sk]||{}), tot = sapCmdTotal(D, d, sk);
+          return <div key={d} style={{display:"flex", justifyContent:"space-between", gap:8, padding:"7px 0", borderTop:"1px solid #f0f0f0", fontSize:14, opacity: sapDeadline(d) < now && d < todayKey() && !tot ? .5 : 1}}>
+            <b style={{minWidth:90}}>{sapDayFr(d)}</b>
+            <span style={{color:s.col, flex:1}}>{s.t}{tot?` · ${tot} sapins`:""}</span>
+            <span>{r.at ? "📦 reçu "+sapSum(r.lines) : (d <= todayKey() && tot ? "📦 à réceptionner" : "")}</span>
+          </div>; })}
+      </div>
+    </div>
+  );
+}
+function sapCmdTotal(D, d, sk){ const c = ((D.cmd||{})[d]||{})[sk]; if (!c || !(c.at||c.auto)) return 0; return sapSum(c.reel); }
+
+function SapinCommande({ D, sk, act, sess, onDone }) {
+  const now = useNow(30000);
+  const open = act.filter(d => sapDeadline(d) > now);
+  const [d, setD] = useState(open[0] || act[act.length-1]);
+  const plan = useMemo(() => sapPlan(D.n1, D.config, d, sk, D.cmd, D.recep), [D.n1, D.config, D.cmd, D.recep, d, sk]);
+  const c = ((D.cmd||{})[d]||{})[sk] || {};
+  const locked = sapDeadline(d) <= now || !!(((D.cmd||{})[d]||{})._locked);
+  const [stock, setStock] = useState({}), [reel, setReel] = useState({}), [busy, setBusy] = useState(false);
+  useEffect(() => { setStock({ ...(c.stock||{}) }); setReel({ ...(c.reel||{}) }); }, [d, sk, c.at]);
+  // recalcul « en direct » de la proposition avec l'inventaire saisi
+  const live = useMemo(() => { const cmds = { ...(D.cmd||{}) }; cmds[d] = { ...(cmds[d]||{}), [sk]: { ...c, stock } }; return sapPlan(D.n1, D.config, d, sk, cmds, D.recep); }, [plan, stock]);
+  const val = (k) => (reel[k]!=="" && reel[k]!=null) ? Number(reel[k]) : null;
+  const total = live.lines.reduce((a,o)=>a+(val(o.k)!=null?val(o.k):o.theo),0);
+  const allTheo = () => { const r = {}; live.lines.forEach(o => { r[o.k] = o.theo; }); setReel(r); };
+  const save = async () => {
+    if (locked) return;
+    setBusy(true);
+    try {
+      const r = {}, th = {}; live.lines.forEach(o => { r[o.k] = val(o.k)!=null ? val(o.k) : o.theo; th[o.k] = o.theo; });
+      const st = {}; Object.keys(stock).forEach(k => { if (stock[k]!=="" && stock[k]!=null) st[k] = Number(stock[k]); });
+      const doc = { reel:r, theo:th, stock:st, by:sess.name, at:Date.now(), auto:null, autoAt:null };
+      await db.ref(`sapins/cmd/${d}/${sk}`).update(doc);
+      await db.ref(`sapins/cmd_hist/${d}/${sk}`).push({ reel:r, stock:st, by:sess.name, at:Date.now() });
+      sapinKick();
+      onDone({ title:"Commande envoyée !", sub:`${sapStore(sk).short} · ${sapSum(r)} sapins pour le ${sapDayFr(d, true)}` });
+    } catch(e) { alert("Erreur : " + e.message); } finally { setBusy(false); }
+  };
+  const isKbg = sk === "KBG";
+  return (
+    <div style={{padding:"12px 12px 120px"}}>
+      <div style={{display:"flex", gap:6, overflowX:"auto", paddingBottom:6}}>
+        {act.map(x => <button key={x} onClick={()=>setD(x)} style={{flex:"0 0 auto", padding:"8px 12px", borderRadius:12, fontWeight:800, fontSize:13, background:x===d?"#c62828":"#fff", color:x===d?"#fff":(sapDeadline(x)<=now?"#aaa":"#333"), border:"1.5px solid #ddd"}}>{sapDayFr(x)}{sapDeadline(x)<=now?" 🔒":""}</button>)}
+      </div>
+      <div style={{background:"#fff", borderRadius:16, padding:14, margin:"8px 0 12px", border:"2px solid #c62828"}}>
+        <div style={{fontSize:19, fontWeight:900}}>🚚 Récupération du {sapDayFr(d, true)}</div>
+        <div style={{fontSize:14, marginTop:4}}>Doit couvrir tes ventes <b>du {sapDayFr(plan.per.du)} au {sapDayFr(plan.per.au)}</b> (jusqu'à la récupération suivante).</div>
+        <div style={{fontSize:13, color:"#555", marginTop:6, lineHeight:1.4}}>💡 <b>Proposition</b> = ventes 2025 {plan.ref.du ? <>du <b>{sapDayFr(plan.ref.du)}</b> au <b>{sapDayFr(plan.ref.au)}/2025</b> (mêmes jours de semaine)</> : "de la même période"} × {String(plan.coef).replace(".",",")}{sk==="BIC"?" (base Tolbiac × coef Bichat)":""}{isKbg?", ou le CNC attendu s'il est plus haut":""} + stock mini de présentation ({plan.mini}) − {isKbg?"stock calculé (ou ton inventaire)":"ton inventaire de la veille"}.</div>
+        {locked ? <div style={{marginTop:8, fontWeight:900, color:"#6d4c41"}}>🔒 Commande figée (minuit passé){c.auto&&!c.at?" — la proposition automatique a été envoyée à Rungis":""}.</div>
+          : <div style={{marginTop:8, fontWeight:900, color:"#c62828"}}>⏰ Jusqu'à minuit il reste {sapFmtH(sapDeadline(d)-now)} pour commander.</div>}
+        {c.at && <div style={{marginTop:6, fontSize:13, color:"#2e7d32", fontWeight:700}}>✅ Déjà commandé par {c.by} le {new Date(c.at).toLocaleString("fr-FR",{weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})} — tu peux encore modifier jusqu'à minuit.</div>}
+      </div>
+      {!locked && <button onClick={allTheo} style={{width:"100%", padding:14, borderRadius:14, background:"#fff8e1", border:"2px dashed #f9a825", fontSize:16, fontWeight:900, color:"#8d6e00", marginBottom:10}}>✨ Tout comme la proposition</button>}
+      {live.lines.map(o => {
+        const L = sapLine(o.k), v = val(o.k), same = v==null || v===o.theo;
+        return (
+          <div key={o.k} style={{background:L.resa?"#f1f1f1":"#fff", borderRadius:14, padding:12, marginBottom:8, borderLeft:`8px solid ${L.hex==="#FFFFFF"?"#bdbdbd":L.hex}`, boxShadow:"0 1px 4px rgba(0,0,0,.05)"}}>
+            <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap"}}>
+              <SapChip k={o.k} big/><b style={{fontSize:15}}>{L.o === "MORVAN" ? "Morvan (1er choix)" : "Jutland (Extra)"}</b>
+              {L.resa && <span style={{fontSize:12, color:"#666"}}>· réservations clients uniquement</span>}
+              {!L.resa && <span style={{fontSize:12, color:"#777", marginLeft:"auto"}}>ventes 2025 : {Math.round(o.ventes*10)/10}</span>}
+            </div>
+            <div style={{display:"flex", alignItems:"flex-end", gap:10, marginTop:10, flexWrap:"wrap"}}>
+              {!L.resa && <div><div style={{fontSize:11, fontWeight:800, color:"#666"}}>{isKbg ? `INVENTAIRE (facult.) · calculé ${o.stockCalc}` : "INVENTAIRE VEILLE (facult.)"}</div>
+                <SapStepper value={stock[o.k]==null?"":stock[o.k]} placeholder={isKbg?String(o.stockCalc):"0"} disabled={locked} onChange={x=>setStock(s=>({ ...s, [o.k]:x }))} /></div>}
+              {!L.resa && <div style={{textAlign:"center", minWidth:80}}><div style={{fontSize:11, fontWeight:800, color:"#666"}}>PROPOSITION</div><div style={{fontSize:30, fontWeight:900, color:"#8d6e00", lineHeight:1.3}}>{o.theo}</div></div>}
+              <div style={{marginLeft:"auto"}}>
+                <div style={{fontSize:11, fontWeight:800, color:"#c62828"}}>MA COMMANDE</div>
+                <div style={{display:"flex", alignItems:"center", gap:6}}>
+                  <SapStepper value={v==null?(L.resa?"":o.theo):v} disabled={locked} color={same?"#2e7d32":"#c62828"} onChange={x=>setReel(r=>({ ...r, [o.k]:x }))} />
+                  {!L.resa && !locked && !same && <button onClick={()=>setReel(r=>({ ...r, [o.k]:o.theo }))} title="Revenir à la proposition" style={{height:42, padding:"0 8px", borderRadius:10, background:"#fff8e1", fontWeight:900, color:"#8d6e00"}}>= {o.theo}</button>}
+                  {!L.resa && same && <span style={{fontSize:20}}>✅</span>}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      {!locked && <div className="bottom-bar"><div className="stats"><span>Total : <b style={{fontSize:16}}>{total}</b> sapins</span><span>{sapStore(sk).short} · {sapDayFr(d)}</span></div>
+        <button className="btn-finish" style={{background:"#c62828"}} disabled={busy} onClick={save}>{busy?"Envoi…":`🎅 Valider la commande (${total} sapins)`}</button></div>}
+    </div>
+  );
+}
+
+function SapinReception({ D, sk, act, sess, onDone }) {
+  const today = todayKey();
+  const dates = act.filter(d => d <= today && (sapCmdTotal(D, d, sk) > 0 || ((D.recep||{})[d]||{})[sk])).reverse();
+  const [d, setD] = useState(dates.find(x => !(((D.recep||{})[x]||{})[sk]||{}).at) || dates[0] || "");
+  const r0 = (((D.recep||{})[d]||{})[sk]) || null;
+  const rc = (D.recup||{})[d] || null;
+  const disp = rc && rc.dispatch ? (rc.dispatch[sk] || {}) : null;
+  const c = ((D.cmd||{})[d]||{})[sk] || {};
+  const expected = disp || c.reel || {};
+  const keys = Array.from(new Set(sapStore(sk).lines.concat(Object.keys(expected)))).filter(k => sapNum(expected[k]) > 0 || (r0 && r0.lines && sapNum(r0.lines[k]) > 0));
+  const [q, setQ] = useState({}), [ask, setAsk] = useState(null), [busy, setBusy] = useState(false), [edit, setEdit] = useState(false);
+  useEffect(() => { const b = {}; keys.forEach(k => { b[k] = r0 && r0.lines ? sapNum(r0.lines[k]) : sapNum(expected[k]); }); setQ(b); setEdit(!r0); }, [d, sk, r0 && r0.at]);
+  if (!dates.length) return <div style={{padding:20}}><div style={{background:"#fff", borderRadius:16, padding:20, textAlign:"center", fontSize:16}}>Aucune livraison de sapins à réceptionner pour l'instant.</div></div>;
+  const diffs = keys.filter(k => sapNum(q[k]) !== sapNum(expected[k]));
+  const save = async (note) => {
+    setBusy(true);
+    try {
+      const lines = {}; keys.forEach(k => { lines[k] = sapNum(q[k]); });
+      const coherent = diffs.length === 0;
+      const doc = { lines, expected, by:sess.name, at:Date.now(), coherent, note:note||"", src:"magasin", alertSent:null, chauffeur:(r0&&r0.chauffeur)||null };
+      if (r0) await db.ref(`sapins/recep_hist/${d}/${sk}`).push({ ...r0, replacedAt:Date.now(), replacedBy:sess.name });
+      await db.ref(`sapins/recep/${d}/${sk}`).set(doc);
+      sapinKick();
+      setAsk(null);
+      onDone({ title: coherent ? "Réception validée !" : "Réception enregistrée", sub:`${sapStore(sk).short} · ${sapSum(lines)} sapins reçus${coherent?"":" · écart signalé à Raimbaud"}` });
+    } catch(e) { alert("Erreur : " + e.message); } finally { setBusy(false); }
+  };
+  const tryValidate = () => { if (diffs.length) setAsk({ note:"" }); else save(""); };
+  return (
+    <div style={{padding:"12px 12px 120px"}}>
+      <div style={{display:"flex", gap:6, overflowX:"auto", paddingBottom:6}}>
+        {dates.map(x => { const done = !!(((D.recep||{})[x]||{})[sk]||{}).at; return <button key={x} onClick={()=>setD(x)} style={{flex:"0 0 auto", padding:"8px 12px", borderRadius:12, fontWeight:800, fontSize:13, background:x===d?"#1565c0":"#fff", color:x===d?"#fff":"#333", border:"1.5px solid #ddd"}}>{sapDayFr(x)} {done?"✅":"⏳"}</button>; })}
+      </div>
+      <div style={{background:"#fff", borderRadius:16, padding:14, margin:"8px 0 12px", border:"2px solid #1565c0"}}>
+        <div style={{fontSize:19, fontWeight:900}}>📦 Livraison du {sapDayFr(d, true)}</div>
+        <div style={{fontSize:14, marginTop:4}}>{disp ? <>Rungis a récupéré et doit te livrer <b>{sapSum(disp)}</b> sapins{rc && rc.by ? <> (chauffeur : <b>{rc.by}</b>)</> : ""}.</> : <>Tu as commandé <b>{sapSum(c.reel)}</b> sapins (le chauffeur n'a pas encore validé sa récupération).</>}</div>
+        {r0 && <div style={{marginTop:6, fontSize:14, color:r0.coherent===false?"#c62828":"#2e7d32", fontWeight:800}}>{r0.coherent===false?"⚠️":"✅"} Réceptionné par {r0.by}{r0.chauffeur?` · chauffeur ${r0.chauffeur}`:""} le {new Date(r0.at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}{r0.note?` · « ${r0.note} »`:""}</div>}
+      </div>
+      {keys.map(k => { const L = sapLine(k), e = sapNum(expected[k]), v = sapNum(q[k]);
+        return <div key={k} style={{display:"flex", alignItems:"center", gap:10, background:"#fff", borderRadius:14, padding:12, marginBottom:8, borderLeft:`8px solid ${L.hex==="#FFFFFF"?"#bdbdbd":L.hex}`}}>
+          <div style={{flex:1, minWidth:0}}><SapChip k={k} big/><div style={{fontSize:13, color:"#555", marginTop:4}}>{L.o==="MORVAN"?"Morvan":"Jutland"} · attendu <b>{e}</b></div></div>
+          <SapStepper value={v} disabled={!edit} color={v===e?"#2e7d32":"#c62828"} onChange={x=>setQ(s=>({ ...s, [k]:x===""?0:x }))} />
+        </div>; })}
+      <div className="bottom-bar"><div className="stats"><span>Reçu : <b style={{fontSize:16}}>{keys.reduce((a,k)=>a+sapNum(q[k]),0)}</b> / attendu {keys.reduce((a,k)=>a+sapNum(expected[k]),0)}</span>{diffs.length>0 && <span style={{color:"#c62828", fontWeight:800}}>⚠️ {diffs.length} écart(s)</span>}</div>
+        {edit ? <button className="btn-finish" style={{background:"#1565c0"}} disabled={busy} onClick={tryValidate}>{busy?"Envoi…":"✅ Valider la réception"}</button>
+              : <button className="btn-finish" style={{background:"#78909c"}} onClick={()=>setEdit(true)}>✏️ Corriger la réception</button>}
+      </div>
+      {ask && <div className="modal-backdrop" onClick={()=>!busy&&setAsk(null)}><div className="modal" onClick={e=>e.stopPropagation()}>
+        <h3 style={{color:"#c62828"}}>⚠️ Pas cohérent avec la livraison Rungis</h3>
+        {diffs.map(k => <div key={k} style={{display:"flex", justifyContent:"space-between", padding:"4px 0"}}><SapChip k={k}/><span>attendu <b>{sapNum(expected[k])}</b> → reçu <b style={{color:"#c62828"}}>{sapNum(q[k])}</b></span></div>)}
+        <div style={{fontSize:13, margin:"10px 0 4px", fontWeight:700}}>Explique (obligatoire) — Raimbaud est prévenu :</div>
+        <textarea rows={3} value={ask.note} onChange={e=>setAsk({ note:e.target.value })} placeholder="ex. 1 sapin cassé, il manquait un filet…" style={{width:"100%", padding:10, borderRadius:8, border:"1.5px solid #ddd", fontSize:15}} />
+        <div className="modal-actions" style={{marginTop:10}}><button className="btn-cancel" onClick={()=>setAsk(null)}>Recompter</button><button className="btn-confirm" disabled={busy || ask.note.trim().length<3} onClick={()=>save(ask.note.trim())}>Enregistrer</button></div>
+      </div></div>}
+    </div>
+  );
+}
+
 function ModuleSelect({ onPick, onResetCache, operator, onLogout }) {
   return (
     <div className="land">
       <div className="land-logo">{BRAND}</div>
       <div className="land-tag">Entrepôt Porte de Pantin — choisis un module</div>
       <div className="mod-grid">
+        {/* v5.31 — 🎄 Sapins de Noël */}
+        <div className="mod-tile" style={{borderTop:"4px solid #c62828", gridColumn:"1 / -1", flexDirection:"row", textAlign:"left", gap:14, background:"linear-gradient(135deg,#fff,#fff5f5)"}} onClick={()=>onPick("sapin")}>
+          <div className="mt-art" style={{width:150, flex:"0 0 150px"}}><ArtSapin/></div>
+          <div style={{flex:1, minWidth:0}}>
+            <div className="mt-name">🎄 Sapins de Noël</div>
+            <div className="mt-sub" style={{marginTop:4}}>Magasins : commander les sapins pour chaque récupération Rungis et faire la réception · ton code = ton magasin</div>
+          </div>
+        </div>
         <div className="mod-tile palette" onClick={()=>onPick("dispatch")}>
           <div className="mt-art"><ArtPalette/></div>
           <div className="mt-name">Dispatch &amp; Picking</div>
@@ -6467,6 +7018,9 @@ function App() {
 
   // ===== LANDING =====
   if (module===null) return <ModuleSelect onPick={pickModule} onResetCache={handleResetCache} operator={operator} onLogout={logout} />;
+
+  // ===== v5.31 — 🎄 SAPINS (code magasin propre au module) =====
+  if (module==="sapin") return <SapinScreen onBack={()=>setModule(null)} />;
 
   // ===== v5.24 — 🟫 SUIVI PALETTES (lecture seule, sans code) =====
   if (module==="suivi") return <SuiviPalettesScreen onBack={()=>setModule(null)} />;
