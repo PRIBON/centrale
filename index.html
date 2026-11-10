@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.34"; // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
+const APP_VERSION = "v5.35"; // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -4050,7 +4050,7 @@ var SAP_STORES = [
     lines:["M80","M100","M125","M150","M175","J80","J100","J125","J150","J175","M200","J200"] },
   { k:"BIC", label:"PRIBON BICHAT", short:"Bichat", col:"BICHAT", cols:["bichat","pribon bichat","bic"], mail:"bichat@pribon.org", color:"#FF1F8E",
     lines:["M80","M100","M125","M150","M175","M200"], noProp:true }, // Morvan uniquement, PAS de proposition (pas d'historique)
-  { k:"KBG", label:"KELBONGOO", short:"Kelbongoo", col:"KELBONGOO", cols:["kelbongoo","kbg"], mail:"achat@probon.fr", color:"#7C3AED",
+  { k:"KBG", masterCmd:true, label:"KELBONGOO", short:"Kelbongoo", col:"KELBONGOO", cols:["kelbongoo","kbg"], mail:"achat@probon.fr", color:"#7C3AED",
     lines:["M80","M100","M125","M150"] },                          // Morvan uniquement, sans remplacement
   // 🧪 Magasin TEST : n'existe que sur les journées de test (Console › 🎄 Sapins › 🧪 Test). Tous les mails → hg@ + rr@.
   { k:"TST", label:"🧪 MAGASIN TEST", short:"Test", col:"TEST", cols:["test"], mail:"hg@probon.fr,rr@pribon.org", color:"#455A64", test:true,
@@ -4468,7 +4468,7 @@ function SapinScreen({ onBack }) {
       {!ready && <div className="sap-body">Chargement…</div>}
       {ready && !D.n1 && <div className="sap-body"><div className="sap-info warn">Les données sapins ne sont pas prêtes : le serveur Sapins n'est pas encore installé.</div></div>}
       {ready && D.n1 && view==="home" && <SapinHome D={D} sk={sk} act={act} onGo={setView} sess={sess} />}
-      {ready && D.n1 && view==="cmd" && <SapinCommande D={D} sk={sk} act={act} sess={sess} onDone={(t)=>{ setCele(t); setView("home"); }} />}
+      {ready && D.n1 && view==="cmd" && !(st.masterCmd && !sess.master) && <SapinCommande D={D} sk={sk} act={act} sess={sess} onDone={(t)=>{ setCele(t); setView("home"); }} />}
       {ready && D.n1 && view==="recep" && <SapinReception D={D} sk={sk} act={act} sess={sess} onDone={(t)=>{ setCele(t); setView("home"); }} />}
       {cele && <SapinCelebration title={cele.title} sub={cele.sub} onClose={()=>setCele(null)} />}
     </div>
@@ -4485,8 +4485,10 @@ function SapinHome({ D, sk, act, onGo, sess }) {
   return (
     <div className="sap-body">
       {test && <div className="sap-test">Mode test : rien ne part aux vrais magasins ni à Rungis. Les mails arrivent à hg@ et rr@.</div>}
-      {nextD && !test && <div className={"sap-clock" + (dl < 6*3600e3 ? " hot" : "")}><span className="num">{sapFmtH(dl)}</span><span className="t">pour commander, jusqu'au {sapDayFr(sapAddDays(nextD,-1), true)} à minuit · <b style={{color:stN.col}}>{stN.t}</b></span></div>}
-      <button className="sap-act" onClick={()=>onGo("cmd")}><span className="ic">{SapIcon.cmd}</span><span><b>Commande</b><span className="s">{sapStore(sk).noProp ? "Je choisis le nombre de sapins par taille" : "Je valide ou je modifie la proposition"}</span></span>{stN && stN.k!=="ok" && <span className="badge">!</span>}</button>
+      {nextD && !test && !(sapStore(sk).masterCmd && !sess.master) && <div className={"sap-clock" + (dl < 6*3600e3 ? " hot" : "")}><span className="num">{sapFmtH(dl)}</span><span className="t">pour commander, jusqu'au {sapDayFr(sapAddDays(nextD,-1), true)} à minuit · <b style={{color:stN.col}}>{stN.t}</b></span></div>}
+      {sapStore(sk).masterCmd && !sess.master
+        ? <div className="sap-act" style={{cursor:"default", opacity:.75}}><span className="ic">{SapIcon.cmd}</span><span><b>Commande</b><span className="s">Faite par le master (Probon). Toi : la réception.</span></span></div>
+        : <button className="sap-act" onClick={()=>onGo("cmd")}><span className="ic">{SapIcon.cmd}</span><span><b>Commande</b><span className="s">{sapStore(sk).noProp ? "Je choisis le nombre de sapins par taille" : "Je valide ou je modifie la proposition"}</span></span>{stN && stN.k!=="ok" && <span className="badge">!</span>}</button>}
       <button className="sap-act" onClick={()=>onGo("recep")}><span className="ic">{SapIcon.recep}</span><span><b>Réception</b><span className="s">Je compte les sapins reçus (obligatoire)</span></span>{recepTodo.length > 0 && <span className="badge">{recepTodo.length}</span>}</button>
       <div className="sap-list">
         {act.map(d => { const s = sapCmdStatus(D, d, sk), r = (((D.recep||{})[d]||{})[sk]||{}), tot = sapCmdTotal(D, d, sk);
