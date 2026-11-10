@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.34"; // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
+const APP_VERSION = "v5.36"; // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -4048,9 +4048,9 @@ var SAP_STORES = [
     lines:["M80","M100","M125","M150","M175","J80","J100","J125","J150","J175","M200","J200"] },
   { k:"TOL", label:"PRIBON TOLBIAC", short:"Tolbiac", col:"TOLBIAC", cols:["tolbiac","pribon tolbiac","tol"], mail:"tolbiac@pribon.org", color:"#0A84FF",
     lines:["M80","M100","M125","M150","M175","J80","J100","J125","J150","J175","M200","J200"] },
-  { k:"BIC", label:"PRIBON BICHAT", short:"Bichat", col:"BICHAT", cols:["bichat","pribon bichat","bic"], mail:"bichat@pribon.org", color:"#FF1F8E",
+  { k:"BIC", consoleCmd:true, label:"PRIBON BICHAT", short:"Bichat", col:"BICHAT", cols:["bichat","pribon bichat","bic"], mail:"bichat@pribon.org", color:"#FF1F8E",
     lines:["M80","M100","M125","M150","M175","M200"], noProp:true }, // Morvan uniquement, PAS de proposition (pas d'historique)
-  { k:"KBG", label:"KELBONGOO", short:"Kelbongoo", col:"KELBONGOO", cols:["kelbongoo","kbg"], mail:"achat@probon.fr", color:"#7C3AED",
+  { k:"KBG", masterCmd:true, label:"KELBONGOO", short:"Kelbongoo", col:"KELBONGOO", cols:["kelbongoo","kbg"], mail:"achat@probon.fr", color:"#7C3AED",
     lines:["M80","M100","M125","M150"] },                          // Morvan uniquement, sans remplacement
   // 🧪 Magasin TEST : n'existe que sur les journées de test (Console › 🎄 Sapins › 🧪 Test). Tous les mails → hg@ + rr@.
   { k:"TST", label:"🧪 MAGASIN TEST", short:"Test", col:"TEST", cols:["test"], mail:"hg@probon.fr,rr@pribon.org", color:"#455A64", test:true,
@@ -4153,10 +4153,17 @@ function sapRecap(n1, config, date, cmds, receps){
   SAP_LINES.forEach(function(L){ out[L.k] = { tot:0, par:{} }; });
   sapStoresFor(config, date).forEach(function(s){
     var c = ((cmds||{})[date]||{})[s.k]; var p = sapPlan(n1, config, date, s.k, cmds, receps); if (!p) return;
-    var validated = !!(c && c.at);   // pas de commande validée = 0 sapin
-    p.lines.forEach(function(o){ var q = validated ? (o.reel!=null?o.reel:0) : 0; if (q>0){ out[o.k].tot += q; out[o.k].par[s.k] = q; } });
+    var validated = !!(c && c.at);   // pas de commande validée = la PRÉVISION part (Bichat : 0, commande saisie dans la console)
+    p.lines.forEach(function(o){ var q = validated ? (o.reel!=null?o.reel:0) : (o.theo||0); if (q>0){ out[o.k].tot += q; out[o.k].par[s.k] = q; } });
   });
   return out;
+}
+/* Quantités qui partent pour un magasin : commande validée (ou saisie console) sinon la prévision. { L:n } */
+function sapEffLines(n1, config, d, sk, cmds, receps){
+  var c = ((cmds||{})[d]||{})[sk], out = {};
+  if (c && c.at){ Object.keys(c.reel||{}).forEach(function(k){ var n = sapNum(c.reel[k]); if (n) out[k] = n; }); return out; }
+  var p = sapPlan(n1, config, d, sk, cmds, receps); if (!p) return out;
+  p.lines.forEach(function(o){ if (o.theo) out[o.k] = o.theo; }); return out;
 }
 /* Ce que le magasin doit recevoir : la livraison validée par le chauffeur (sapins/livr), sinon la répartition prévue (recup.dispatch). */
 function sapAttendu(recups, livrs, d, sk){ var l = ((livrs||{})[d]||{})[sk]; if (l && l.lines) return l.lines; var rc = (recups||{})[d]; return (rc && rc.dispatch) ? (rc.dispatch[sk] || {}) : null; }
@@ -4468,13 +4475,16 @@ function SapinScreen({ onBack }) {
       {!ready && <div className="sap-body">Chargement…</div>}
       {ready && !D.n1 && <div className="sap-body"><div className="sap-info warn">Les données sapins ne sont pas prêtes : le serveur Sapins n'est pas encore installé.</div></div>}
       {ready && D.n1 && view==="home" && <SapinHome D={D} sk={sk} act={act} onGo={setView} sess={sess} />}
-      {ready && D.n1 && view==="cmd" && <SapinCommande D={D} sk={sk} act={act} sess={sess} onDone={(t)=>{ setCele(t); setView("home"); }} />}
+      {ready && D.n1 && view==="cmd" && !(st.masterCmd && !sess.master) && !st.consoleCmd && <SapinCommande D={D} sk={sk} act={act} sess={sess} onDone={(t)=>{ setCele(t); setView("home"); }} />}
       {ready && D.n1 && view==="recep" && <SapinReception D={D} sk={sk} act={act} sess={sess} onDone={(t)=>{ setCele(t); setView("home"); }} />}
       {cele && <SapinCelebration title={cele.title} sub={cele.sub} onClose={()=>setCele(null)} />}
     </div>
   );
 }
-function sapCmdStatus(D, d, sk){ const c = ((D.cmd||{})[d]||{})[sk]; if (!c || !c.at) return { k:"none", t:"Pas encore commandé (= 0 sapin)", col:"#B3261E" }; return { k:"ok", t:"Commandé par "+(c.by||"?"), col:"#1C5240" }; }
+function sapCmdStatus(D, d, sk){ const c = ((D.cmd||{})[d]||{})[sk]; const st = sapStore(sk);
+  if (c && c.at && !c.auto) return { k:"ok", t:(c.src==="console" ? "Commande saisie par Probon" : "Commande modifiée par "+(c.by||"?")), col:"#1C5240" };
+  if (st.consoleCmd) return { k:"none", t:"Commande saisie par Probon", col:"#5F6F66" };
+  return { k:"prev", t:"Prévision : "+sapCmdTotal(D, d, sk)+" sapins (part toute seule)", col:"#1C5240" }; }
 function SapinHome({ D, sk, act, onGo, sess }) {
   const now = useNow(30000);
   const test = !!sapStore(sk).test;
@@ -4485,8 +4495,10 @@ function SapinHome({ D, sk, act, onGo, sess }) {
   return (
     <div className="sap-body">
       {test && <div className="sap-test">Mode test : rien ne part aux vrais magasins ni à Rungis. Les mails arrivent à hg@ et rr@.</div>}
-      {nextD && !test && <div className={"sap-clock" + (dl < 6*3600e3 ? " hot" : "")}><span className="num">{sapFmtH(dl)}</span><span className="t">pour commander, jusqu'au {sapDayFr(sapAddDays(nextD,-1), true)} à minuit · <b style={{color:stN.col}}>{stN.t}</b></span></div>}
-      <button className="sap-act" onClick={()=>onGo("cmd")}><span className="ic">{SapIcon.cmd}</span><span><b>Commande</b><span className="s">{sapStore(sk).noProp ? "Je choisis le nombre de sapins par taille" : "Je valide ou je modifie la proposition"}</span></span>{stN && stN.k!=="ok" && <span className="badge">!</span>}</button>
+      {nextD && !test && !(sapStore(sk).masterCmd && !sess.master) && !sapStore(sk).consoleCmd && <div className={"sap-clock" + (dl < 6*3600e3 ? " hot" : "")}><span className="num">{sapFmtH(dl)}</span><span className="t">pour changer ta prévision, jusqu'au {sapDayFr(sapAddDays(nextD,-1), true)} à minuit · <b style={{color:stN.col}}>{stN.t}</b></span></div>}
+      {((sapStore(sk).masterCmd && !sess.master) || sapStore(sk).consoleCmd)
+        ? <div className="sap-act" style={{cursor:"default", opacity:.75}}><span className="ic">{SapIcon.cmd}</span><span><b>Commande</b><span className="s">{sapStore(sk).consoleCmd ? "Saisie par Probon. Toi : la réception." : "Faite par le master (Probon). Toi : la réception."}</span></span></div>
+        : <button className="sap-act" onClick={()=>onGo("cmd")}><span className="ic">{SapIcon.cmd}</span><span><b>Commande</b><span className="s">Ta prévision part toute seule. Tu peux la changer.</span></span></button>}
       <button className="sap-act" onClick={()=>onGo("recep")}><span className="ic">{SapIcon.recep}</span><span><b>Réception</b><span className="s">Je compte les sapins reçus (obligatoire)</span></span>{recepTodo.length > 0 && <span className="badge">{recepTodo.length}</span>}</button>
       <div className="sap-list">
         {act.map(d => { const s = sapCmdStatus(D, d, sk), r = (((D.recep||{})[d]||{})[sk]||{}), tot = sapCmdTotal(D, d, sk);
@@ -4495,7 +4507,7 @@ function SapinHome({ D, sk, act, onGo, sess }) {
     </div>
   );
 }
-function sapCmdTotal(D, d, sk){ const c = ((D.cmd||{})[d]||{})[sk]; if (!c || !c.at) return 0; return sapSum(c.reel); }
+function sapCmdTotal(D, d, sk){ if (!D.n1) return 0; return sapSum(sapEffLines(D.n1, D.config, d, sk, D.cmd, D.recep)); }
 
 function SapinCommande({ D, sk, act, sess, onDone }) {
   const now = useNow(30000);
@@ -4519,11 +4531,11 @@ function SapinCommande({ D, sk, act, sess, onDone }) {
     try {
       const r = {}, th = {}; live.lines.forEach(o => { r[o.k] = val(o.k)!=null ? val(o.k) : o.theo; th[o.k] = o.theo; });
       const st = {}; Object.keys(stock).forEach(k => { if (stock[k]!=="" && stock[k]!=null) st[k] = Number(stock[k]); });
-      const doc = { reel:r, theo:th, stock:st, by:sess.name, at:Date.now(), master:!!sess.master };
+      const doc = { reel:r, theo:th, stock:st, by:sess.name, at:Date.now(), master:!!sess.master, auto:null, src:null };
       await db.ref(`sapins/cmd/${d}/${sk}`).update(doc);
       await db.ref(`sapins/cmd_hist/${d}/${sk}`).push({ reel:r, stock:st, by:sess.name, at:Date.now() });
       sapinKick();
-      onDone({ title:"Commande envoyée !", sub:`${sapStore(sk).short} · ${sapSum(r)} sapins pour le ${sapDayFr(d, true)}` });
+      onDone({ title:"Commande validée !", sub:`${sapStore(sk).short} · ${sapSum(r)} sapins pour le ${sapDayFr(d, true)}` });
     } catch(e) { alert("Erreur : " + e.message); } finally { setBusy(false); }
   };
   const isKbg = sk === "KBG";
@@ -4536,9 +4548,9 @@ function SapinCommande({ D, sk, act, sess, onDone }) {
         <div>Ta commande doit tenir du {sapDayFr(plan.per.du)} au {sapDayFr(plan.per.au)}.</div>
         {noProp ? <div style={{marginTop:6}}>Pas de proposition pour ton magasin : mets toi-même le nombre de sapins par taille.</div>
           : <div style={{marginTop:6, color:"#5F6F66"}}>Proposition = ventes {plan.ref.du ? `du ${sapDayFr(plan.ref.du)} au ${sapDayFr(plan.ref.au)} 2025` : "2025"}{isKbg ? " ou CNC attendu" : ""} + petit stock de présentation − {isKbg ? "stock" : "ton inventaire"}.</div>}
-        {locked ? <div className="warn" style={{marginTop:8}}>Commande figée.{!c.at ? " Pas de commande validée : 0 sapin." : ""}</div>
-          : <div style={{marginTop:8}}><span className="warn">Pas de commande validée = 0 sapin.</span>{!test && <> Modifiable jusqu'au {sapDayFr(sapAddDays(d,-1))} minuit ({sapFmtH(sapDeadline(d)-now)}).</>}</div>}
-        {c.at && <div className="ok" style={{marginTop:6}}>Commandé par {c.by} le {new Date(c.at).toLocaleString("fr-FR",{weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</div>}
+        {locked ? <div className="warn" style={{marginTop:8}}>Commande figée.{(!c.at || c.auto) ? " C'est la prévision qui est partie." : ""}</div>
+          : <div style={{marginTop:8}}>{noProp ? <span className="warn">Commande saisie par Probon.</span> : <><b>Si tu ne touches à rien, la prévision part toute seule.</b> Tu veux autre chose ? Change les nombres puis <b>Valider</b>.</>}{!test && <> Jusqu'au {sapDayFr(sapAddDays(d,-1))} minuit ({sapFmtH(sapDeadline(d)-now)}).</>}</div>}
+        {c.at && !c.auto && <div className="ok" style={{marginTop:6}}>{c.src==="console" ? "Saisie par Probon" : "Modifiée et validée par "+c.by} le {new Date(c.at).toLocaleString("fr-FR",{weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</div>}
       </div>
       {!locked && !noProp && <button className="sap-ghost" onClick={allTheo}>Tout comme la proposition</button>}
       {live.lines.map(o => {
@@ -4558,7 +4570,7 @@ function SapinCommande({ D, sk, act, sess, onDone }) {
         );
       })}
       {!locked && <div className="sap-foot"><div className="in"><div className="tot"><span>{sapStore(sk).short} · {sapDayFr(d)}</span><span>Total <b>{total}</b> sapins</span></div>
-        <button className="go" disabled={busy} onClick={save}>{busy ? "Envoi…" : (c.at ? "Enregistrer la modification" : "Valider la commande")}</button></div></div>}
+        <button className="go" disabled={busy} onClick={save}>{busy ? "Envoi…" : ((c.at && !c.auto) ? "Enregistrer la modification" : "Valider ma commande")}</button></div></div>}
     </div>
   );
 }
@@ -4589,7 +4601,7 @@ function SapinReception({ D, sk, act, sess, onDone }) {
       await db.ref(`sapins/recep/${d}/${sk}`).set(doc);
       sapinKick();
       setAsk(null);
-      onDone({ title: coherent ? "Réception validée !" : "Réception enregistrée", sub:`${sapStore(sk).short} · ${sapSum(lines)} sapins reçus${coherent?"":" · écart signalé à Raimbaud"}` });
+      onDone({ title: coherent ? "Réception validée !" : "Réception enregistrée", sub:`${sapStore(sk).short} · ${sapSum(lines)} sapins reçus` });
     } catch(e) { alert("Erreur : " + e.message); } finally { setBusy(false); }
   };
   const tryValidate = () => { if (diffs.length) setAsk({ note:"" }); else save(""); };
@@ -4612,9 +4624,8 @@ function SapinReception({ D, sk, act, sess, onDone }) {
       {ask && <div className="modal-backdrop" onClick={()=>!busy&&setAsk(null)}><div className="modal sap" style={{minHeight:0}} onClick={e=>e.stopPropagation()}>
         <h3 style={{color:"#B3261E", margin:"0 0 10px"}}>Pas le même nombre que le chauffeur a déposé</h3>
         {diffs.map(k => <div key={k} style={{display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0"}}><SapChip k={k}/><span>attendu <b>{sapNum(expected[k])}</b> · reçu <b style={{color:"#B3261E"}}>{sapNum(q[k])}</b></span></div>)}
-        <div style={{fontSize:14, margin:"12px 0 6px", fontWeight:700}}>Explique en quelques mots (Raimbaud est prévenu)</div>
-        <textarea rows={3} value={ask.note} onChange={e=>setAsk({ note:e.target.value })} placeholder="ex. 1 sapin cassé" style={{width:"100%", padding:10, borderRadius:12, border:"2px solid #DCE4DF", fontSize:15, fontFamily:"inherit"}} />
-        <div className="modal-actions" style={{marginTop:12}}><button className="btn-cancel" onClick={()=>setAsk(null)}>Recompter</button><button className="btn-confirm" style={{background:"#B3261E"}} disabled={busy || ask.note.trim().length<3} onClick={()=>save(ask.note.trim())}>Enregistrer</button></div>
+        <div style={{fontSize:16, margin:"12px 0 0", fontWeight:700}}>Tu as bien recompté ?</div>
+        <div className="modal-actions" style={{marginTop:12}}><button className="btn-cancel" onClick={()=>setAsk(null)}>Recompter</button><button className="btn-confirm" style={{background:"#B3261E"}} disabled={busy} onClick={()=>save("")}>Oui, valider</button></div>
       </div></div>}
     </div>
   );
