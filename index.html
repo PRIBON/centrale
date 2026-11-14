@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.41"; // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
+const APP_VERSION = "v5.42"; // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -4357,6 +4357,50 @@ const SAPCSS = `
 .sap-days button { flex:0 0 auto; padding:8px 13px; border-radius:12px; font-weight:700; font-size:14px; background:#fff; color:var(--ink); border:1.5px solid #DCE4DF; }
 .sap-days button.on { background:var(--fir); color:#fff; border-color:var(--fir); }
 .sap-days button.off { color:#9AA69F; }
+.sap-stepn { display:flex; align-items:center; gap:10px; font:800 19px "Bricolage Grotesque", sans-serif; margin:6px 2px 10px; }
+.sap-stepn span { flex:0 0 30px; height:30px; border-radius:50%; background:var(--fir); color:#fff; display:flex; align-items:center; justify-content:center; font-size:16px; }
+.sap-cal { background:#fff; border:2px solid #E2EAE5; border-radius:20px; padding:14px 14px 12px; }
+.sap-cal .top { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+.sap-cal .top b { font:800 18px "Bricolage Grotesque", sans-serif; }
+.sap-cal .top span { font-size:12.5px; color:var(--mute); font-weight:600; display:flex; align-items:center; gap:5px; }
+.sap-cal .k { width:14px; height:14px; border-radius:5px; display:inline-block; margin-left:8px; }
+.sap-cal .k.on { background:var(--berry); } .sap-cal .k.lk { background:#C9CFCB; } .sap-cal .k.ok { background:var(--fir2); }
+.sap-cal .grid { display:grid; grid-template-columns:repeat(7,1fr); gap:6px; }
+.sap-cal .w { text-align:center; font-size:12.5px; font-weight:700; color:var(--mute); padding-bottom:2px; }
+.sap-cal .c { position:relative; height:54px; border-radius:14px; display:flex; flex-direction:column; align-items:center; justify-content:center; font:700 17px "Bricolage Grotesque", sans-serif; color:#A3AEA8; background:transparent; line-height:1; }
+.sap-cal .c small { font-size:10.5px; font-weight:700; margin-top:3px; }
+.sap-cal .c.past { color:#CFD6D2; }
+.sap-cal .c.today { box-shadow:inset 0 0 0 2px #B8C6BE; color:var(--ink); }
+.sap-cal button.c.on { background:var(--berry); color:#fff; font-size:21px; font-weight:800; box-shadow:0 3px 0 #7A1F18; cursor:pointer; }
+.sap-cal button.c.on:active { transform:translateY(2px); box-shadow:0 1px 0 #7A1F18; }
+.sap-cal button.c.on.sel { outline:4px solid #F6C744; outline-offset:2px; }
+.sap-cal button.c.on.lk { background:#C9CFCB; color:#5F6F66; box-shadow:none; }
+.sap-cal button.c.on.ok { background:var(--fir2); box-shadow:0 3px 0 #0E2C21; }
+.sap-cal button.c i { position:absolute; top:3px; right:5px; font-style:normal; font-size:11px; font-weight:800; }
+.sap-pick { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin:12px 2px 18px; }
+.sap-pick b { font:800 26px "Bricolage Grotesque", sans-serif; color:var(--berry); text-transform:capitalize; }
+.sap-pick span { color:var(--mute); font-size:15px; font-weight:600; }
+.sap-state { display:flex; gap:14px; border-radius:22px; padding:18px; margin-bottom:14px; border:2px solid; }
+.sap-state .ic { flex:0 0 56px; height:56px; border-radius:50%; display:flex; align-items:center; justify-content:center; font:800 30px "Bricolage Grotesque", sans-serif; color:#fff; }
+.sap-state .tx { flex:1; min-width:0; }
+.sap-state .tx > b { display:block; font:800 23px/1.15 "Bricolage Grotesque", sans-serif; }
+.sap-state .tx > span { display:block; font-size:15.5px; line-height:1.4; margin-top:5px; }
+.sap-state.auto { background:#E6F4EA; border-color:#9CCFAB; } .sap-state.auto .ic { background:#2E7D4F; } .sap-state.auto .tx > b { color:#17512F; }
+.sap-state.mod { background:#FFF7E2; border-color:#E9C46A; } .sap-state.mod .ic { background:#C98A12; }
+.sap-state.todo { background:#FBECEA; border-color:#E3A29C; } .sap-state.todo .ic { background:var(--berry); } .sap-state.todo .tx > b { color:#8E1C15; }
+.sap-state.lk { background:#EEF1EF; border-color:#D3DAD6; } .sap-state.lk .ic { background:#8A978F; font-size:24px; }
+.sap-state .btns { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+.sap-state .b2 { min-height:48px; padding:0 18px; border-radius:14px; background:#fff; border:2px solid var(--ink); color:var(--ink); font:700 16px "Bricolage Grotesque", sans-serif; }
+.sap-state .b3 { min-height:48px; padding:0 14px; border-radius:14px; background:transparent; color:var(--mute); font-weight:700; font-size:15px; text-decoration:underline; }
+.sap-sum { display:flex; flex-wrap:wrap; gap:8px 14px; margin-top:12px; }
+.sap-sum span { display:inline-flex; align-items:center; gap:6px; } .sap-sum b { font:800 17px "Bricolage Grotesque", sans-serif; } .sap-sum em { color:var(--mute); font-style:normal; font-weight:700; }
+.sap-edit-h { display:flex; justify-content:space-between; align-items:center; margin:4px 2px 8px; } .sap-edit-h b { font:800 18px "Bricolage Grotesque", sans-serif; }
+.sap-edit-h button { min-height:40px; padding:0 14px; border-radius:12px; background:#fff; border:1.5px solid #DCE4DF; font-weight:700; color:var(--ink); }
+.sap-body.wide { max-width:1180px; }
+.sap-cols { display:grid; grid-template-columns:1fr; gap:0 26px; }
+@media (min-width:980px){ .sap-cols { grid-template-columns:minmax(0,440px) minmax(0,1fr); align-items:start; } .sap-cols .sap-cal .c { height:46px; } }
+.sap-hint { color:var(--mute); font-size:13.5px; margin:0 2px 10px; }
+@media (max-width:520px){ .sap-cal .c { height:46px; } .sap-state { padding:14px; gap:10px; } .sap-state .ic { flex-basis:44px; height:44px; font-size:24px; } .sap-state .tx > b { font-size:20px; } }
 .sap-info { background:#fff; border-radius:18px; padding:14px 16px; margin-bottom:12px; border:2px solid #E2EAE5; font-size:14.5px; line-height:1.45; }
 .sap-info h2 { font-size:20px; margin:0 0 4px; font-weight:800; }
 .sap-info .warn { color:var(--berry); font-weight:700; }
@@ -4500,8 +4544,9 @@ function SapinLogin({ onLogin, onBack }) {
     try {
       const j = await sapinPost({ action:"sapin-login", code });
       if (!j || !j.ok) { setErr(j && j.error==="inconnu" ? "Code inconnu. Demande au gérant." : ("Connexion impossible : " + ((j && j.error) || "serveur"))); return; }
-      if (!j.stores || !j.stores.length) { setErr(`${j.name} : ton code n'est relié à aucun magasin dans le registre.`); return; }
-      const s = { name:j.name, stores:j.stores, master:false, cur:j.stores[0] };
+      const mine = (j.stores||[]).filter(k => sapStore(k) && !sapStore(k).masterCmd && !sapStore(k).test);   // Kelbongoo : jamais avec un code (commande = console master)
+      if (!mine.length) { setErr(`${j.name} : ton code n'est relié à aucun magasin (Montreuil, Tolbiac, Bichat) dans le registre.`); return; }
+      const s = { name:j.name, stores:mine, master:false, cur:mine[0] };
       sapinSessSet(s); onLogin(s);
     } catch(e) { setErr(e.message); }
     finally { setBusy(false); setCode(""); }
@@ -4540,15 +4585,16 @@ function SapinScreen({ onBack }) {
   const D = useSapinData();
   useEffect(() => { window.__centraleModule = "sapin"; return () => { window.__centraleModule = null; }; }, []);
   if (!sess) return <SapinLogin onLogin={s=>{ setSess(s); setView("home"); }} onBack={onBack} />;
-  const sk = sess.cur, st = sapStore(sk);
+  const storeKeys = sess.master ? SAP_STORES.map(s=>s.k) : (sess.stores||[]).filter(k => sapStore(k) && !sapStore(k).masterCmd && !sapStore(k).test);
   const logout = () => { sapinSessSet(null); setSess(null); };
+  if (!storeKeys.length) return <SapinLogin onLogin={s=>{ setSess(s); setView("home"); }} onBack={onBack} />;
+  const sk = storeKeys.indexOf(sess.cur) >= 0 ? sess.cur : storeKeys[0], st = sapStore(sk);
   const switchStore = (k) => { const s = { ...sess, cur:k }; sapinSessSet(s); setSess(s); setView("home"); };
   const ready = D.n1 !== undefined;
   const act = ready && D.n1 ? sapActiveDates(D.n1, D.config, st.test ? "test" : "") : [];
   const now = Date.now();
   const nextD = act.find(d => !sapLocked(D.config, D.cmd, d, now)) || null;
   const per = nextD ? sapPeriod(D.n1, D.config, nextD) : null;
-  const storeKeys = (sess.master ? SAP_STORES.map(s=>s.k) : sess.stores);
   return (
     <div className="sap">
       <SapStyle/>
@@ -4627,6 +4673,34 @@ function SapinTestDays({ D, sess }) {
     </div>
   );
 }
+/* Calendrier en semaines : seuls les jours de récupération sont des boutons (rouges). mark(x) → { cls, ic } */
+function SapCal({ dates, sel, onPick, mark, legend }) {
+  const today = todayKey();
+  if (!dates.length) return null;
+  const mon = (k) => { const p = k.split("-"), dt = new Date(+p[0], +p[1]-1, +p[2], 12); return sapAddDays(k, -((dt.getDay()+6)%7)); };
+  const last = dates[dates.length-1];
+  let start = mon(today > dates[0] ? today : dates[0]); if (start > last) start = mon(dates[0]);
+  if (sel && sel < start) start = mon(sel);
+  const end = sapAddDays(mon(last), 6), cells = [];
+  for (let k = start; k <= end && cells.length < 140; k = sapAddDays(k, 1)) cells.push(k);
+  const MO = ["janv.","févr.","mars","avril","mai","juin","juil.","août","sept.","oct.","nov.","déc."];
+  const MOL = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+  const m0 = +start.slice(5,7)-1, m1 = +end.slice(5,7)-1;
+  return (
+    <div className="sap-cal">
+      <div className="top"><b>{m0===m1 ? MOL[m0] : MOL[m0]+" – "+MOL[m1]} {end.slice(0,4)}</b><span>{legend}</span></div>
+      <div className="grid">
+        {["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"].map(w => <div key={w} className="w">{w}</div>)}
+        {cells.map(k => { const on = dates.indexOf(k) >= 0, dn = +k.slice(8), first = dn === 1 || k === start;
+          const lab = <>{dn}{first && <small>{MO[+k.slice(5,7)-1]}</small>}</>;
+          if (!on) return <div key={k} className={"c" + (k===today ? " today" : "") + (k<today ? " past" : "")}>{lab}</div>;
+          const m = (mark && mark(k)) || {};
+          return <button key={k} type="button" className={"c on" + (k===sel ? " sel" : "") + (m.cls ? " "+m.cls : "")} onClick={()=>onPick(k)} aria-label={sapDayFr(k, true)}>{lab}{m.ic && <i>{m.ic}</i>}</button>; })}
+      </div>
+    </div>
+  );
+}
+const sapLeft = (ms) => { if (ms <= 0) return "c'est fini"; const h = Math.floor(ms/3600e3); return h >= 48 ? "encore "+Math.floor(h/24)+" jours" : "encore "+sapFmtH(ms); };
 function sapCmdTotal(D, d, sk){ if (!D.n1) return 0; return sapSum(sapEffLines(D.n1, D.config, d, sk, D.cmd, D.recep)); }
 
 function SapinCommande({ D, sk, act, sess, onDone }) {
@@ -4659,38 +4733,64 @@ function SapinCommande({ D, sk, act, sess, onDone }) {
     } catch(e) { alert("Erreur : " + e.message); } finally { setBusy(false); }
   };
   const isKbg = sk === "KBG";
+  const must = noProp || !!sapStore(sk).manualCmd;          // pas de prévision automatique : il faut commander
+  const done = !!(c.at && !c.auto);                          // le magasin a validé sa propre commande
+  const [edit, setEdit] = useState(false);
+  useEffect(() => { setEdit(false); }, [d, sk]);
+  const editing = !locked && (edit || (must && !done));
+  const sent = sapEffLines(D.n1, D.config, d, sk, D.cmd, D.recep), sentTot = sapSum(sent);
+  const back = async () => { if (!confirm("Revenir à la prévision automatique pour le " + sapDayFr(d, true) + " ?")) return;
+    try { await db.ref(`sapins/cmd/${d}/${sk}`).remove(); sapinKick(); setEdit(false); } catch(e) { alert("Erreur : " + e.message); } };
+  const veille = sapDayFr(sapAddDays(d,-1), true);
+  const recap = (o) => <div className="sap-sum">{Object.keys(o).filter(k => o[k] > 0).map(k => <span key={k}><SapChip k={k}/><b>× {o[k]}</b></span>)}{!Object.keys(o).some(k => o[k] > 0) && <em>0 sapin</em>}</div>;
+  const inCal = act.every(x => sapActiveDates(D.n1, D.config, "").indexOf(x) >= 0);
   return (
-    <div className="sap-body">
+    <div className="sap-body wide">
       {test && <div className="sap-test">Mode test · commande ouverte jusqu'au clic « Figer » dans la console</div>}
-      <div className="sap-days">{act.map(x => { const lk = sapLocked(D.config, D.cmd, x, now); return <button key={x} className={(x===d?"on":"") + (lk?" off":"")} onClick={()=>setD(x)}>{sapDayFr(x)}{lk?" · figé":""}</button>; })}</div>
-      <div className="sap-info">
-        <h2>Récupération du {sapDayFr(d, true)}</h2>
-        <div>Ta commande doit tenir du {sapDayFr(plan.per.du)} au {sapDayFr(plan.per.au)}.</div>
-        {noProp ? null
-          : <div style={{marginTop:6, color:"#5F6F66"}}>Proposition = ventes {plan.ref.du ? `du ${sapDayFr(plan.ref.du)} au ${sapDayFr(plan.ref.au)} 2025` : "2025"}{isKbg ? " ou CNC attendu" : ""} + petit stock de présentation − {isKbg ? "stock" : "ton inventaire"}.</div>}
-        {locked ? <div className="warn" style={{marginTop:8}}>Commande figée.{(!c.at || c.auto) ? " C'est la prévision qui est partie." : ""}</div>
-          : <div style={{marginTop:8}}>{sapStore(sk).manualCmd ? <><b>Rien ne part tout seul :</b> vérifie la proposition, puis <b>Valider ma commande</b>. <span className="warn">Sans commande validée : 0 sapin.</span></> : noProp ? <><b>Pas de prévision pour ton magasin :</b> mets le nombre de sapins voulus puis <b>Valider</b>. <span className="warn">Sans commande validée : 0 sapin.</span></> : <><b>Si tu ne touches à rien, la prévision part toute seule.</b> Tu veux autre chose ? Change les nombres puis <b>Valider</b>.</>}{!test && <> Jusqu'au {sapDayFr(sapAddDays(d,-1))} minuit ({sapFmtH(sapDeadline(d)-now)}).</>}</div>}
-        {c.at && !c.auto && <div className="ok" style={{marginTop:6}}>{c.src==="console" ? "Saisie par Probon" : "Modifiée et validée par "+c.by} le {new Date(c.at).toLocaleString("fr-FR",{weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</div>}
-      </div>
-      {!locked && !noProp && <button className="sap-ghost" onClick={allTheo}>Tout comme la proposition</button>}
-      {live.lines.map(o => {
-        const L = sapLine(o.k), v = val(o.k), same = !noProp && (v==null || v===o.theo);
-        return (
-          <div key={o.k} className={"sap-line" + (L.resa ? " resa" : "")}>
-            <div className="who"><SapChip k={o.k} big/><small>{L.resa ? "Réservations clients seulement" : (noProp ? (L.o==="MORVAN"?"1er choix":"Extra") : `Ventes 2025 : ${Math.round(o.ventes*10)/10}`)}</small></div>
-            {!L.resa && <div className="col"><label>{isKbg ? `Stock (calculé ${o.stockCalc})` : "Inventaire veille"}</label><SapStepper value={stock[o.k]==null?"":stock[o.k]} placeholder={isKbg?String(o.stockCalc):"0"} disabled={locked} onChange={x=>setStock(s=>({ ...s, [o.k]:x }))} /></div>}
-            {!L.resa && !noProp && <div className="col"><label>Proposition</label><div className="prop">{o.theo}</div></div>}
-            <div className="col"><label style={{color:"#B3261E"}}>Ma commande</label>
-              <div style={{display:"flex", alignItems:"center", gap:6}}>
-                <SapStepper value={v==null?((L.resa||noProp)?"":o.theo):v} disabled={locked} color={noProp?undefined:(same?"#2e7d32":"#c62828")} onChange={x=>setReel(r=>({ ...r, [o.k]:x }))} />
-                {!L.resa && !noProp && !locked && !same && <button onClick={()=>setReel(r=>({ ...r, [o.k]:o.theo }))} title="Revenir à la proposition" style={{height:44, padding:"0 10px", borderRadius:12, background:"#F3EADD", fontWeight:800, color:"#6E5330"}}>= {o.theo}</button>}
+      <div className="sap-cols"><div>
+      <div className="sap-stepn"><span>1</span>Choisis le jour de récupération</div>
+      {inCal
+        ? <SapCal dates={act} sel={d} onPick={setD} legend={<><i className="k on"/>jour de récupération <i className="k lk"/>parti</>}
+            mark={x => { const lk = sapLocked(D.config, D.cmd, x, now), cc = ((D.cmd||{})[x]||{})[sk]; return { cls: lk ? "lk" : "", ic: lk ? "🔒" : (cc && cc.at && !cc.auto ? "✓" : "") }; }} />
+        : <div className="sap-days">{act.map(x => { const lk = sapLocked(D.config, D.cmd, x, now); return <button key={x} className={(x===d?"on":"") + (lk?" off":"")} onClick={()=>setD(x)}>{sapDayFr(x)}{lk?" · figé":""}</button>; })}</div>}
+      <div className="sap-pick"><b>{sapDayFr(d, true)}</b><span>Sapins à vendre du {sapDayFr(plan.per.du)} au {sapDayFr(plan.per.au)}</span></div>
+      </div><div>
+      <div className="sap-stepn"><span>2</span>{must ? "Passe ta commande" : "Ta commande"}</div>
+      {locked
+        ? <div className="sap-state lk"><div className="ic">🔒</div><div className="tx"><b>C'est parti : {sentTot} sapins</b><span>{done ? "Ta commande a été envoyée à Rungis." : (must ? "Pas de commande validée : 0 sapin." : "La prévision a été envoyée à Rungis.")} On ne peut plus changer.</span>{recap(sent)}</div></div>
+        : done
+          ? <div className="sap-state mod"><div className="ic">✓</div><div className="tx"><b>Commande validée : {sentTot} sapins</b><span>{c.src==="console" ? "Saisie par Probon" : "Par "+c.by} · tu peux encore changer jusqu'à {veille} minuit ({sapLeft(sapDeadline(d)-now)}).</span>{recap(sent)}
+              {!editing && <div className="btns"><button className="b2" onClick={()=>setEdit(true)}>Changer les quantités</button>{!must && <button className="b3" onClick={back}>Revenir à la prévision</button>}</div>}</div></div>
+          : must
+            ? <div className="sap-state todo"><div className="ic">!</div><div className="tx"><b>À commander : rien ne part tout seul</b><span>Mets tes quantités puis <b>Valider</b>, avant {veille} minuit{!test && <> ({sapLeft(sapDeadline(d)-now)})</>}. Sans commande : <b>0 sapin</b>.</span></div></div>
+            : editing ? <div className="sap-state mod"><div className="ic">✎</div><div className="tx"><b>Tu changes la prévision</b><span>Elle proposait {sentTot} sapins. Mets tes nombres en bas, puis <b>Valider mes quantités</b>. Si tu annules, la prévision part toute seule.</span></div></div>
+            : <div className="sap-state auto"><div className="ic">✓</div><div className="tx"><b>Rien à faire : {sentTot} sapins partent tout seuls</b><span>La prévision est envoyée automatiquement {veille} à minuit. <u>Pas besoin de valider.</u></span>{recap(sent)}
+                {!editing && <div className="btns"><button className="b2" onClick={()=>setEdit(true)}>Je veux d'autres quantités</button></div>}</div></div>}
+      </div></div>
+
+      {editing && <>
+        {!must && <div className="sap-edit-h"><b>Change les nombres en rouge</b><button onClick={()=>{ setEdit(false); setReel({ ...(c.reel||{}) }); }}>Annuler</button></div>}
+        {!noProp && <div className="sap-hint">Proposition = ventes {plan.ref.du ? `du ${sapDayFr(plan.ref.du)} au ${sapDayFr(plan.ref.au)} 2025` : "2025"}{isKbg ? " ou CNC attendu" : ""} + petit stock de présentation − {isKbg ? "stock" : "ton inventaire"}.</div>}
+        {!noProp && <button className="sap-ghost" onClick={allTheo}>Tout remettre comme la proposition</button>}
+        {live.lines.map(o => {
+          const L = sapLine(o.k), v = val(o.k), same = !noProp && (v==null || v===o.theo);
+          return (
+            <div key={o.k} className={"sap-line" + (L.resa ? " resa" : "")}>
+              <div className="who"><SapChip k={o.k} big/><small>{L.resa ? "Réservations clients seulement" : (noProp ? (L.o==="MORVAN"?"1er choix":"Extra") : `Ventes 2025 : ${Math.round(o.ventes*10)/10}`)}</small></div>
+              {!L.resa && <div className="col"><label>{isKbg ? `Stock (calculé ${o.stockCalc})` : "Inventaire veille"}</label><SapStepper value={stock[o.k]==null?"":stock[o.k]} placeholder={isKbg?String(o.stockCalc):"0"} onChange={x=>setStock(s=>({ ...s, [o.k]:x }))} /></div>}
+              {!L.resa && !noProp && <div className="col"><label>Proposition</label><div className="prop">{o.theo}</div></div>}
+              <div className="col"><label style={{color:"#B3261E"}}>Ma commande</label>
+                <div style={{display:"flex", alignItems:"center", gap:6}}>
+                  <SapStepper value={v==null?((L.resa||noProp)?"":o.theo):v} color={noProp?undefined:(same?"#2e7d32":"#c62828")} onChange={x=>setReel(r=>({ ...r, [o.k]:x }))} />
+                  {!L.resa && !noProp && !same && <button onClick={()=>setReel(r=>({ ...r, [o.k]:o.theo }))} title="Revenir à la proposition" style={{height:44, padding:"0 10px", borderRadius:12, background:"#F3EADD", fontWeight:800, color:"#6E5330"}}>= {o.theo}</button>}
+                </div>
               </div>
             </div>
-          </div>
-        );
-      })}
-      {!locked && <div className="sap-foot"><div className="in"><div className="tot"><span>{sapStore(sk).short} · {sapDayFr(d)}</span><span>Total <b>{total}</b> sapins</span></div>
-        <button className="go" disabled={busy} onClick={save}>{busy ? "Envoi…" : ((c.at && !c.auto) ? "Enregistrer la modification" : "Valider ma commande")}</button></div></div>}
+          );
+        })}
+        <div className="sap-foot"><div className="in"><div className="tot"><span>{sapStore(sk).short} · récupération du {sapDayFr(d, true)}</span><span>Total <b>{total}</b> sapins</span></div>
+          <button className="go" disabled={busy} onClick={save}>{busy ? "Envoi…" : (done ? "Enregistrer ma modification" : (must ? "Valider ma commande" : "Valider mes quantités"))}</button></div></div>
+      </>}
     </div>
   );
 }
@@ -4729,7 +4829,9 @@ function SapinReception({ D, sk, act, sess, onDone }) {
   return (
     <div className="sap-body">
       {test && <div className="sap-test">Mode test</div>}
-      <div className="sap-days">{dates.map(x => { const done = !!(((D.recep||{})[x]||{})[sk]||{}).at; return <button key={x} className={x===d?"on":""} onClick={()=>setD(x)}>{sapDayFr(x)}{done?" · reçu":""}</button>; })}</div>
+      {dates.length > 1 && (dates.every(x => sapActiveDates(D.n1, D.config, "").indexOf(x) >= 0)
+        ? <SapCal dates={dates} sel={d} onPick={setD} legend={<><i className="k on"/>livraison <i className="k ok"/>déjà reçu</>} mark={x => { const dn = !!(((D.recep||{})[x]||{})[sk]||{}).at; return { cls: dn ? "ok" : "", ic: dn ? "✓" : "" }; }} />
+        : <div className="sap-days">{dates.map(x => { const done = !!(((D.recep||{})[x]||{})[sk]||{}).at; return <button key={x} className={x===d?"on":""} onClick={()=>setD(x)}>{sapDayFr(x)}{done?" · reçu":""}</button>; })}</div>)}
       <div className="sap-info">
         <h2>Livraison du {sapDayFr(d, true)}</h2>
         <div>{lv ? <>Le chauffeur {lv.by} a déposé <b>{sapSum(lv.lines)}</b> sapins ({new Date(lv.at).toLocaleString("fr-FR",{weekday:"short",hour:"2-digit",minute:"2-digit"})}). Compte-les et valide.</> : disp ? <>Rungis doit te livrer <b>{sapSum(disp)}</b> sapins{rc && rc.by ? ` (chauffeur ${rc.by})` : ""}.</> : <>Tu as commandé <b>{sapSum(c.reel)}</b> sapins. Le chauffeur n'a pas encore noté sa récupération.</>}</div>
