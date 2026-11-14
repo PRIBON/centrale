@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.39"; // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
+const APP_VERSION = "v5.40"; // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -4048,7 +4048,7 @@ var SAP_STORES = [
     lines:["M80","M100","M125","M150","M175","J80","J100","J125","J150","J175","M200","J200"] },
   { k:"TOL", label:"PRIBON TOLBIAC", short:"Tolbiac", col:"TOLBIAC", cols:["tolbiac","pribon tolbiac","tol"], mail:"tolbiac@pribon.org", color:"#0A84FF",
     lines:["M80","M100","M125","M150","M175","J80","J100","J125","J150","J175","M200","J200"] },
-  { k:"BIC", consoleCmd:true, label:"PRIBON BICHAT", short:"Bichat", col:"BICHAT", cols:["bichat","pribon bichat","bic"], mail:"bichat@pribon.org", color:"#FF1F8E",
+  { k:"BIC", label:"PRIBON BICHAT", short:"Bichat", col:"BICHAT", cols:["bichat","pribon bichat","bic"], mail:"bichat@pribon.org", color:"#FF1F8E",
     lines:["M80","M100","M125","M150","M175","M200"], noProp:true }, // Morvan uniquement, PAS de proposition (pas d'historique)
   { k:"KBG", masterCmd:true, label:"KELBONGOO", short:"Kelbongoo", col:"KELBONGOO", cols:["kelbongoo","kbg"], mail:"achat@probon.fr", color:"#7C3AED",
     lines:["M80","M100","M125","M150"] },                          // Morvan uniquement, sans remplacement
@@ -4180,7 +4180,7 @@ function sapToday(){ var t = new Date(); return t.getFullYear()+"-"+String(t.get
    Règles : on ajoute seulement un jour futur (commande encore ouverte) ; on retire seulement un jour non figé ;
    on peut DÉPLACER un jour figé (Rungis ne peut pas y aller) tant que le chauffeur n'a rien récupéré : les commandes figées suivent. */
 function sapDayOps(n1, config, cmds, recups, op, from, to, who, src, now){
-  now = now || Date.now(); var act = sapActiveDates(n1, config, ""), P = {}, at = now;
+  now = now || Date.now(); var act = sapActiveDates(n1, config, "all"), P = {}, at = now;
   var fut = function(d){ return /^\d{4}-\d{2}-\d{2}$/.test(d||"") && sapDeadline(d) > now; };
   if (op === "add"){
     if (!fut(to)) return { ok:false, error:"Choisis un jour à venir (au plus tôt après-demain)." };
@@ -4200,6 +4200,7 @@ function sapDayOps(n1, config, cmds, recups, op, from, to, who, src, now){
     if (act.indexOf(to) >= 0) return { ok:false, error:"Ce jour est déjà un jour de récupération." };
     P["config/recups/"+from] = { on:false, by:who, at:at, src:src, movedTo:to };
     P["config/recups/"+to]   = { on:true, by:who, at:at, src:src, movedFrom:from };
+    var of = (config.recups||{})[from] || {}; if (of.test){ P["config/recups/"+to].test = true; P["config/recups/"+to].testRungis = !!of.testRungis; P["config/recups/"+from].test = true; }
     var c = (cmds||{})[from]; if (c){ P["cmd/"+to] = c; P["cmd/"+from] = null; }
     P["recap/"+from] = null;
     return { ok:true, patch:P };
@@ -4571,7 +4572,7 @@ function SapinScreen({ onBack }) {
 }
 function sapCmdStatus(D, d, sk){ const c = ((D.cmd||{})[d]||{})[sk]; const st = sapStore(sk);
   if (c && c.at && !c.auto) return { k:"ok", t:(c.src==="console" ? "Commande saisie par Probon" : "Commande modifiée par "+(c.by||"?")), col:"#1C5240" };
-  if (st.consoleCmd) return { k:"none", t:"Commande saisie par Probon", col:"#5F6F66" };
+  if (st.noProp) return { k:"none", t:"Pas encore commandé (= 0 sapin)", col:"#B3261E" };
   return { k:"prev", t:"Prévision : "+sapCmdTotal(D, d, sk)+" sapins (part toute seule)", col:"#1C5240" }; }
 function SapinHome({ D, sk, act, onGo, sess }) {
   const now = useNow(30000);
@@ -4582,15 +4583,43 @@ function SapinHome({ D, sk, act, onGo, sess }) {
   const stN = nextD ? sapCmdStatus(D, nextD, sk) : null;
   return (
     <div className="sap-body">
-      {test && <div className="sap-test">Mode test : rien ne part aux vrais magasins ni à Rungis. Les mails arrivent à hg@ et rr@.</div>}
-      {nextD && !test && !(sapStore(sk).masterCmd && !sess.master) && !sapStore(sk).consoleCmd && <div className={"sap-clock" + (dl < 6*3600e3 ? " hot" : "")}><span className="num">{sapFmtH(dl)}</span><span className="t">pour changer ta prévision, jusqu'au {sapDayFr(sapAddDays(nextD,-1), true)} à minuit · <b style={{color:stN.col}}>{stN.t}</b></span></div>}
+      {test && <div className="sap-test">🧪 Magasin test (visible seulement par le master). Les vrais magasins ne voient rien. Mails à hg@ et rr@ (+ Rungis si coché, marqué « TEST — ne pas récupérer »).</div>}
+      {test && sess.master && <SapinTestDays D={D} sess={sess} />}
+      {nextD && !test && !(sapStore(sk).masterCmd && !sess.master) && !sapStore(sk).consoleCmd && <div className={"sap-clock" + (dl < 6*3600e3 ? " hot" : "")}><span className="num">{sapFmtH(dl)}</span><span className="t">{sapStore(sk).noProp ? "pour passer ta commande" : "pour changer ta prévision"}, jusqu'au {sapDayFr(sapAddDays(nextD,-1), true)} à minuit · <b style={{color:stN.col}}>{stN.t}</b></span></div>}
       {((sapStore(sk).masterCmd && !sess.master) || sapStore(sk).consoleCmd)
         ? <div className="sap-act" style={{cursor:"default", opacity:.75}}><span className="ic">{SapIcon.cmd}</span><span><b>Commande</b><span className="s">{sapStore(sk).consoleCmd ? "Saisie par Probon. Toi : la réception." : "Faite par le master (Probon). Toi : la réception."}</span></span></div>
-        : <button className="sap-act" onClick={()=>onGo("cmd")}><span className="ic">{SapIcon.cmd}</span><span><b>Commande</b><span className="s">Ta prévision part toute seule. Tu peux la changer.</span></span></button>}
+        : <button className="sap-act" onClick={()=>onGo("cmd")}><span className="ic">{SapIcon.cmd}</span><span><b>Commande</b><span className="s">{sapStore(sk).noProp ? "Choisis tes sapins (pas de prévision). Pas de commande = 0 sapin." : "Ta prévision part toute seule. Tu peux la changer."}</span></span></button>}
       <button className="sap-act" onClick={()=>onGo("recep")}><span className="ic">{SapIcon.recep}</span><span><b>Réception</b><span className="s">Je compte les sapins reçus (obligatoire)</span></span>{recepTodo.length > 0 && <span className="badge">{recepTodo.length}</span>}</button>
       <div className="sap-list">
         {act.map(d => { const s = sapCmdStatus(D, d, sk), r = (((D.recep||{})[d]||{})[sk]||{}), tot = sapCmdTotal(D, d, sk);
           return <div key={d} className="r"><b style={{minWidth:86}}>{sapDayFr(d)}</b><span style={{flex:1, color:s.col}}>{tot ? tot+" sapins" : s.k==="ok" ? "0 sapin" : "—"}</span><span style={{color:"#5F6F66"}}>{r.at ? "reçu "+sapSum(r.lines) : ((test || d <= todayKey()) && tot ? "à réceptionner" : "")}</span></div>; })}
+      </div>
+    </div>
+  );
+}
+/* 🧪 Master › magasin test : choisir le jour où Rungis « doit récupérer » (journée de test) */
+function SapinTestDays({ D, sess }) {
+  const [d, setD] = useState(""); const [rg, setRg] = useState(true); const [busy, setBusy] = useState(false);
+  const rc = (D.config||{}).recups||{}, today = todayKey();
+  const tdays = Object.keys(rc).filter(k => rc[k] && rc[k].test && rc[k].on !== false).sort();
+  const real = D.n1 ? sapActiveDates(D.n1, D.config, "") : [];
+  const create = async () => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { alert("Choisis une date."); return; }
+    if (d < today) { alert("Choisis aujourd'hui ou un jour à venir."); return; }
+    if (real.indexOf(d) >= 0) { alert("C'est déjà un vrai jour de récupération : choisis un autre jour pour le test."); return; }
+    setBusy(true);
+    try { await db.ref("sapins/config/recups/"+d).set({ on:true, test:true, testRungis:rg, by:sess.name, at:Date.now() }); setD(""); }
+    catch(e){ alert(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="sap-info" style={{marginBottom:12}}>
+      <div style={{fontWeight:800, fontSize:17}}>📅 Jour de récupération du test</div>
+      <div style={{fontSize:14, margin:"4px 0 8px"}}>Choisis le jour où Rungis « récupère ». Ensuite : <b>Commande</b> → valider. Rappel, minuit et mail de 2 h suivent l'horloge comme en vrai.</div>
+      {tdays.length > 0 && <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:8}}>{tdays.map(k => <span key={k} className="sap-tag" style={{background:"#455A64", color:"#fff", padding:"4px 10px", borderRadius:10, fontWeight:800}}>🧪 {sapDayFr(k, true)}{rc[k].testRungis ? " · Rungis prévenu" : ""}</span>)}</div>}
+      <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center"}}>
+        <input type="date" value={d} min={today} onChange={e=>setD(e.target.value)} style={{flex:"1 1 150px", minHeight:46, borderRadius:12, border:"2px solid #DCE4DF", padding:"0 10px", fontSize:16}} />
+        <label style={{display:"flex", alignItems:"center", gap:6, fontSize:14, fontWeight:700}}><input type="checkbox" checked={rg} onChange={e=>setRg(e.target.checked)} style={{width:20, height:20}} /> Rungis reçoit le mail de 2 h</label>
+        <button disabled={busy} onClick={create} style={{minHeight:46, borderRadius:12, border:"none", background:"#123B2C", color:"#fff", fontWeight:800, padding:"0 16px"}}>Créer le jour test</button>
       </div>
     </div>
   );
@@ -4634,10 +4663,10 @@ function SapinCommande({ D, sk, act, sess, onDone }) {
       <div className="sap-info">
         <h2>Récupération du {sapDayFr(d, true)}</h2>
         <div>Ta commande doit tenir du {sapDayFr(plan.per.du)} au {sapDayFr(plan.per.au)}.</div>
-        {noProp ? <div style={{marginTop:6}}>Pas de proposition pour ton magasin : mets toi-même le nombre de sapins par taille.</div>
+        {noProp ? null
           : <div style={{marginTop:6, color:"#5F6F66"}}>Proposition = ventes {plan.ref.du ? `du ${sapDayFr(plan.ref.du)} au ${sapDayFr(plan.ref.au)} 2025` : "2025"}{isKbg ? " ou CNC attendu" : ""} + petit stock de présentation − {isKbg ? "stock" : "ton inventaire"}.</div>}
         {locked ? <div className="warn" style={{marginTop:8}}>Commande figée.{(!c.at || c.auto) ? " C'est la prévision qui est partie." : ""}</div>
-          : <div style={{marginTop:8}}>{noProp ? <span className="warn">Commande saisie par Probon.</span> : <><b>Si tu ne touches à rien, la prévision part toute seule.</b> Tu veux autre chose ? Change les nombres puis <b>Valider</b>.</>}{!test && <> Jusqu'au {sapDayFr(sapAddDays(d,-1))} minuit ({sapFmtH(sapDeadline(d)-now)}).</>}</div>}
+          : <div style={{marginTop:8}}>{noProp ? <><b>Pas de prévision pour ton magasin :</b> mets le nombre de sapins voulus puis <b>Valider</b>. <span className="warn">Sans commande validée : 0 sapin.</span></> : <><b>Si tu ne touches à rien, la prévision part toute seule.</b> Tu veux autre chose ? Change les nombres puis <b>Valider</b>.</>}{!test && <> Jusqu'au {sapDayFr(sapAddDays(d,-1))} minuit ({sapFmtH(sapDeadline(d)-now)}).</>}</div>}
         {c.at && !c.auto && <div className="ok" style={{marginTop:6}}>{c.src==="console" ? "Saisie par Probon" : "Modifiée et validée par "+c.by} le {new Date(c.at).toLocaleString("fr-FR",{weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</div>}
       </div>
       {!locked && !noProp && <button className="sap-ghost" onClick={allTheo}>Tout comme la proposition</button>}
