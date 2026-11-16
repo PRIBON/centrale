@@ -347,7 +347,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.45"; // v5.45 = connexion sécurisée étape A : session anonyme + session ouverte par le registre (cadenas 🔒 à côté de la version) // v5.43 = sécurité : contrôle admin côté serveur, plus de liste d'adresses ni d'accès de secours dans le fichier, connexion @probon.org acceptée // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
+const APP_VERSION = "v5.46"; // v5.46 = jeton de session envoyé aux scripts // v5.45 = connexion sécurisée étape A : session anonyme + session ouverte par le registre (cadenas 🔒 à côté de la version) // v5.43 = sécurité : contrôle admin côté serveur, plus de liste d'adresses ni d'accès de secours dans le fichier, connexion @probon.org acceptée // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -778,6 +778,20 @@ async function pribonEnsure(code){
     catch(e) { return; }
   }
 }
+// Tous les appels aux scripts Google portent le jeton de la tablette (fb) : le serveur vérifie la session.
+(function(){
+  if (typeof window === "undefined" || !window.fetch || window.__pribonFetch) return;
+  const orig = window.fetch.bind(window); window.__pribonFetch = true;
+  window.fetch = async function(url, opt){
+    try {
+      if (typeof url === "string" && url.indexOf("script.google.com/macros/") >= 0 && opt && String(opt.method||"").toUpperCase() === "POST" && typeof opt.body === "string" && opt.body.charAt(0) === "{") {
+        const b = JSON.parse(opt.body);
+        if (!b.fb) { const a = pribonAuth(); const u = a && a.currentUser; const t = u ? await u.getIdToken() : ""; if (t) opt = Object.assign({}, opt, { body: JSON.stringify(Object.assign(b, { fb: { prep: t } })) }); }
+      }
+    } catch(e) {}
+    return orig(url, opt);
+  };
+})();
 // Compte Google (admin / master) : le serveur vérifie le jeton Google, répond { allowed, email } et ouvre la session responsable.
 async function verifyAdminServer(idToken){
   const fb = await pribonAnonToken();
