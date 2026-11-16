@@ -18,6 +18,7 @@ function __cdnFB(u){ document.write('<scr'+'ipt src="'+u+'"></scr'+'ipt>'); }
 <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" onerror="__cdnFB('https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js')"></script>
 <!-- Firebase (compat builds) -->
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
 <!-- Google Identity Services (connexion admin) -->
 <script src="https://accounts.google.com/gsi/client" async></script>
@@ -346,7 +347,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.43"; // v5.43 = sécurité : contrôle admin côté serveur, plus de liste d'adresses ni d'accès de secours dans le fichier, connexion @probon.org acceptée // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
+const APP_VERSION = "v5.45"; // v5.45 = connexion sécurisée étape A : session anonyme + session ouverte par le registre (cadenas 🔒 à côté de la version) // v5.43 = sécurité : contrôle admin côté serveur, plus de liste d'adresses ni d'accès de secours dans le fichier, connexion @probon.org acceptée // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -733,12 +734,64 @@ const decodeJwt = (t) => {
     return JSON.parse(json);
   } catch(e) { return null; }
 };
-// v5.43 — Le serveur vérifie le jeton Google (signature, destinataire, email vérifié) et répond { allowed, email }.
+/* =========================================================================
+   v5.45 — CONNEXION SÉCURISÉE (étape A : la base reste ouverte, les tablettes se connectent déjà)
+   1. La tablette se connecte en ANONYME à la base (Firebase Auth) — seule, cette connexion n'ouvre rien.
+   2. Le code (ou le compte Google) est vérifié par le serveur du registre, qui ouvre une SESSION
+      auth_sessions/<uid> limitée dans le temps. Les règles de la base (étape B) n'acceptent que ces sessions.
+   Aucune adresse, aucun secret, aucune clé dans ce fichier.
+   Étape A : sans session (Auth pas encore activé, serveur ancien), on continue comme avant — rien ne bloque.
+   ========================================================================= */
+const PRIBON_STRICT = false;   // étape B (base fermée) : true → pas de session = pas d'accès
+const pribonAuth = () => { try { return (firebaseReady && firebase.auth) ? firebase.auth() : null; } catch(e) { return null; } };
+async function pribonAnonToken(){
+  const a = pribonAuth(); if (!a) return "";
+  for (let i = 0; i < 2; i++) {
+    try {
+      if (!a.currentUser) await a.signInAnonymously();
+      return a.currentUser ? await a.currentUser.getIdToken() : "";
+    } catch(e) {
+      console.warn("[connexion] anonyme impossible", e && e.code);
+      if (e && e.code === "auth/operation-not-allowed") return "";
+      try { await a.signOut(); } catch(_){}   // compte anonyme effacé (nettoyage 30 j) : on en recrée un
+    }
+  }
+  return "";
+}
+function pribonSetSession(sessions){
+  const exp = sessions && sessions.prep;
+  try { if (exp) localStorage.setItem("centrale_sess_exp", String(exp)); } catch(e){}
+  try { window.dispatchEvent(new Event("pribon-session")); } catch(e){}
+  return !!exp;
+}
+const pribonHasSession = () => { try { return parseInt(localStorage.getItem("centrale_sess_exp")||"0",10) > Date.now(); } catch(e){ return false; } };
+function pribonSignOut(){
+  try { localStorage.removeItem("centrale_sess_exp"); } catch(e){}
+  const a = pribonAuth(); if (a) { try { a.signOut(); } catch(e){} }   // nouvel uid anonyme à la prochaine connexion → l'ancienne session ne sert plus
+  try { window.dispatchEvent(new Event("pribon-session")); } catch(e){}
+}
+// Tablette déjà ouverte avec un code (avant la mise à jour) : session ouverte en arrière-plan, sans rien redemander.
+async function pribonEnsure(code){
+  if (!code || pribonHasSession()) return;
+  for (const m of ["dispatch","decoupe"]) {
+    try { const r = await verifyCentraleCode(code, m); if (r && r.valid && pribonHasSession()) return; if (r && r.reason==="trop") return; }
+    catch(e) { return; }
+  }
+}
+// Compte Google (admin / master) : le serveur vérifie le jeton Google, répond { allowed, email } et ouvre la session responsable.
 async function verifyAdminServer(idToken){
-  const r = await fetch(CODE_VERIFY_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"verify-responsable", idToken }) });
+  const fb = await pribonAnonToken();
+  const r = await fetch(CODE_VERIFY_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"verify-responsable", idToken, fb: fb ? { prep: fb } : undefined }) });
   const j = await r.json();
   if (!j || j.ok===false) throw new Error((j && j.error) || "réponse serveur invalide");
+  if (j.allowed) { const ok = pribonSetSession(j.sessions); if (!ok && PRIBON_STRICT) throw new Error("session sécurisée non ouverte"); }
   return j;
+}
+// Petit cadenas à côté du numéro de version : 🔒 = tablette connectée au serveur sécurisé.
+function PribonBadge(){
+  const [on, setOn] = useState(pribonHasSession());
+  useEffect(() => { const f = () => setOn(pribonHasSession()); window.addEventListener("pribon-session", f); const t = setInterval(f, 60000); return () => { window.removeEventListener("pribon-session", f); clearInterval(t); }; }, []);
+  return <span title={on ? "Connexion sécurisée active" : "Pas encore de connexion sécurisée"}>{on ? "🔒" : "🔓"}</span>;
 }
 
 // Noms longs des magasins pour les BL / palettes.
@@ -774,17 +827,22 @@ async function verifyCentraleCode(code, moduleKey) {
     // ("DISPATCH PALETTE" / "DECOUPE FROMAGE"). Le serveur déjà déployé coche cette colonne.
     // (moduleColumn est envoyé en plus, au cas où le serveur utilise ce nom.)
     const col = MODULE_COLUMN[moduleKey] || "";
+    const fb = await pribonAnonToken();   // v5.45 — jeton anonyme : le serveur ouvre la session sécurisée si le code est bon
     const r = await fetch(CODE_VERIFY_URL, {
       method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
-      body:JSON.stringify({ action:"verify-code", code:clean, scope:"CENTRALE", storeCode:col, moduleColumn:col, module:moduleKey||"" })
+      body:JSON.stringify({ action:"verify-code", code:clean, scope:"CENTRALE", storeCode:col, moduleColumn:col, module:moduleKey||"", fb: fb ? { prep: fb } : undefined })
     });
     const j = await r.json();
-    if (j && typeof j.valid === "boolean") return { valid:j.valid, name:(j.name||j.prenom||"").trim(), reason:j.reason||"", server:true };
-    // Réponse inattendue -> repli
-    return { valid:true, name:"", server:false, degraded:true };
+    if (j && typeof j.valid === "boolean") {
+      const reason = (!j.valid && /trop d'essais/i.test(j.reason||"")) ? "trop" : (j.reason||"");
+      if (j.valid && !pribonSetSession(j.sessions) && PRIBON_STRICT) return { valid:false, reason:"serveur", server:true };
+      return { valid:j.valid, name:(j.name||j.prenom||"").trim(), reason, server:true };
+    }
+    // Réponse inattendue -> repli (étape A seulement)
+    return PRIBON_STRICT ? { valid:false, reason:"serveur", server:false } : { valid:true, name:"", server:false, degraded:true };
   } catch(e) {
-    // Serveur injoignable / action absente -> repli local (ne bloque pas l'entrepôt)
-    return { valid:true, name:"", server:false, degraded:true };
+    // Serveur injoignable -> étape A : repli local (ne bloque pas l'entrepôt) · étape B : refus
+    return PRIBON_STRICT ? { valid:false, reason:"serveur", server:false } : { valid:true, name:"", server:false, degraded:true };
   }
 }
 // Nom affichable d'un opérateur à partir de son code + nom résolu.
@@ -1463,7 +1521,7 @@ function CodeLoginScreen({ moduleLabel, moduleKey, onLogin, onBack }) {
     setBusy(true); setError("");
     const res = await verifyCentraleCode(c, moduleKey);
     setBusy(false);
-    if (!res.valid) { setError(res.reason==="module" ? "Ton code n'a pas accès à ce module." : "Code non reconnu. Vérifie auprès du gérant."); return; }
+    if (!res.valid) { setError(res.reason==="module" ? "Ton code n'a pas accès à ce module." : res.reason==="trop" ? "Trop d'essais. Attends une minute puis réessaie." : res.reason==="serveur" ? "Serveur de connexion injoignable. Réessaie." : "Code non reconnu. Vérifie auprès du gérant."); return; }
     let name = res.name || (await resolveOperatorName(c)) || "";
     if (opIsNameless(name)) name = "";
     localStorage.setItem("centrale_op_code", c);
@@ -7095,6 +7153,8 @@ function PickingScreen({ pickingId, pick, operator, onLeave, onEnlevement }) {
 function App() {
   // Module courant : null (menu) | dispatch | decoupe | vin | reception | admin
   const [module, setModule] = useState(null);
+  // v5.44 — tablette déjà ouverte avec un code : jeton récupéré en arrière-plan (une fois au démarrage).
+  useEffect(() => { try { pribonEnsure(localStorage.getItem("centrale_op_code")||""); } catch(e){} }, []);
   // Opérateur (login par code) — partagé entre modules, persistant.
   const [operator, setOperator] = useState(() => {
     const c = localStorage.getItem("centrale_op_code")||"";
@@ -7113,6 +7173,7 @@ function App() {
   useEffect(() => { try { localStorage.removeItem("centrale_admin_email"); } catch(e){} }, []);
   const logout = () => {
     ["centrale_op_code","centrale_op_name","centrale_op_at"].forEach(k=>{ try{ localStorage.removeItem(k); }catch(e){} });
+    pribonSignOut();
     setOperator(null); setModule(null);
   };
   // v5.15 : opérateur sans nom (ancienne connexion) → Prénom Nom résolus depuis le registre (le code n'est jamais affiché).
@@ -7364,7 +7425,7 @@ function App() {
 }
 
 try {
-  ReactDOM.createRoot(document.getElementById("root")).render(<><App /><div style={{position:"fixed", right:8, bottom:6, zIndex:99999, fontSize:11, fontWeight:700, color:"#5F6F66", background:"rgba(255,255,255,.85)", borderRadius:8, padding:"2px 7px", pointerEvents:"none"}}>La Centrale {APP_VERSION}</div></>);
+  ReactDOM.createRoot(document.getElementById("root")).render(<><App /><div style={{position:"fixed", right:8, bottom:6, zIndex:99999, fontSize:11, fontWeight:700, color:"#5F6F66", background:"rgba(255,255,255,.85)", borderRadius:8, padding:"2px 7px", pointerEvents:"none"}}>La Centrale {APP_VERSION} <PribonBadge /></div></>);
 } catch (e) {
   console.error("Rendu impossible", e);
   if (window.showBootError) window.showBootError("Erreur au démarrage de l'application.");
