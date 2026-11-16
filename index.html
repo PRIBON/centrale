@@ -346,7 +346,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.42"; // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
+const APP_VERSION = "v5.43"; // v5.43 = sécurité : contrôle admin côté serveur, plus de liste d'adresses ni d'accès de secours dans le fichier, connexion @probon.org acceptée // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -540,13 +540,8 @@ const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxj8BOPRY7V_Ni_
 // ==== Accès Admin (connexion Google) ====
 // Même client OAuth que l'app Réception PRIBON.
 const OAUTH_CLIENT_ID = "757658680772-ogalpu5olqd2fiovnbnj55j1g0lbq7rr.apps.googleusercontent.com";
-// Emails autorisés à ouvrir l'admin (les admins sont toujours les mêmes).
-const ADMIN_EMAILS = [
-  "achat@probon.fr", "rr@probon.fr", "hg@probon.fr",
-  "ga@pribon.org", "achat@pribon.org"
-];
-// Accès de secours si la connexion Google est indisponible (bloqueur / origine non autorisée).
-const FALLBACK_ADMIN_NAMES = ["henry", "raimbaud"];
+// v5.43 — SÉCURITÉ : plus aucune adresse autorisée dans ce fichier. Le contrôle se fait CÔTÉ SERVEUR
+//   (script Réception, action verify-responsable) à partir du jeton Google. Plus d'« accès de secours » par prénom.
 // Adresse qui recevra les demandes d'avoir fournisseur.
 const AVOIR_MAIL = "achat@pribon.org";
 
@@ -738,8 +733,13 @@ const decodeJwt = (t) => {
     return JSON.parse(json);
   } catch(e) { return null; }
 };
-const isAdminEmail = (email) => ADMIN_EMAILS.map(e=>e.toLowerCase()).includes((email||"").toLowerCase().trim());
-const isFallbackAdmin = (name) => FALLBACK_ADMIN_NAMES.includes((name||"").toLowerCase().trim());
+// v5.43 — Le serveur vérifie le jeton Google (signature, destinataire, email vérifié) et répond { allowed, email }.
+async function verifyAdminServer(idToken){
+  const r = await fetch(CODE_VERIFY_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify({ action:"verify-responsable", idToken }) });
+  const j = await r.json();
+  if (!j || j.ok===false) throw new Error((j && j.error) || "réponse serveur invalide");
+  return j;
+}
 
 // Noms longs des magasins pour les BL / palettes.
 const STORE_LONG = { RUNGIS:"RUNGIS (retour emballages)", ROB:"ROBESPIERRE", TOL:"TOLBIAC", PDP:"PORTE DE PANTIN", BIC:"BICHAT", BAR:"BARBES", BOR:"BORREGO", CES:"CESAR", CHA:"CHARONNE", FOR:"FORGE", LIL:"LILLE", NCA:"NATION A", NCC:"NATION C", PAD:"PADOUE", PDC:"PLACE DE CLICHY", ROM:"ROME", STB:"SAINT-BLAISE" };
@@ -2996,6 +2996,7 @@ function AdminGate({ operator, onSuccess, onClose }) {
   const [error, setError] = useState("");
   const [googleReady, setGoogleReady] = useState(false);
   const [showFallback, setShowFallback] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     let tries = 0;
@@ -3005,11 +3006,10 @@ function AdminGate({ operator, onSuccess, onClose }) {
         clearInterval(timer);
         try {
           window.google.accounts.id.initialize({ client_id: OAUTH_CLIENT_ID, callback: (resp) => {
-            const info = decodeJwt(resp.credential);
-            if (!info) { setError("Jeton Google illisible."); return; }
-            if (String(info.email_verified)!=="true") { setError("Email Google non vérifié."); return; }
-            if (!isAdminEmail(info.email)) { setError(`Accès refusé pour ${info.email}.`); return; }
-            onSuccess(info.email.toLowerCase());
+            setError(""); setChecking(true);
+            verifyAdminServer(resp.credential)
+              .then(j => { setChecking(false); if (j.allowed && j.email) onSuccess(String(j.email).toLowerCase()); else setError("Accès refusé : ce compte n'est pas autorisé."); })
+              .catch(e => { setChecking(false); setError("Vérification impossible (serveur injoignable). Réessaie. — "+e.message); });
           }});
           if (btnRef.current) window.google.accounts.id.renderButton(btnRef.current, { theme:"filled_blue", size:"large", text:"signin_with", width:280 });
           setGoogleReady(true);
@@ -3031,15 +3031,12 @@ function AdminGate({ operator, onSuccess, onClose }) {
         <p style={{fontSize:13, color:"#666", margin:"0 0 14px 0"}}>Connecte-toi avec ton compte Google professionnel.</p>
         <div className="gbtn-host"><div ref={btnRef}></div></div>
         {!googleReady && !showFallback && <div className="admin-note">Chargement de la connexion Google…</div>}
+        {checking && <div className="admin-note">Vérification du compte…</div>}
         {error && <div style={{color:"#c62828", background:"#ffebee", padding:10, borderRadius:6, fontSize:13, marginTop:10}}>{error}</div>}
         {showFallback && (
           <div style={{marginTop:14, paddingTop:14, borderTop:"1px solid #eee"}}>
             <div className="admin-note" style={{marginBottom:8}}>Connexion Google indisponible (bloqueur ou origine non autorisée).</div>
-            {isFallbackAdmin(operator) ? (
-              <button className="btn-primary" onClick={()=>onSuccess("fallback:"+operator.toLowerCase())}>Accès de secours ({operator})</button>
-            ) : (
-              <div className="admin-note">Débloque accounts.google.com puis réessaie.</div>
-            )}
+            <div className="admin-note">Débloque accounts.google.com puis réessaie.</div>
           </div>
         )}
         <button className="btn-secondary" onClick={onClose} style={{marginTop:12}}>← Retour à l'accueil</button>
@@ -4575,7 +4572,7 @@ function SapinLogin({ onLogin, onBack }) {
     </div>
   );
 }
-const RESP_NAME_BY_MAIL = { "hg@probon.fr":"Henry", "rr@probon.fr":"Raimbaud", "rr@pribon.org":"Raimbaud" };
+const RESP_NAME_BY_MAIL = new Proxy({}, { get:(_, email) => ({ hg:"Henry", rr:"Raimbaud" })[String(email||"").split("@")[0]] }); // v5.43 : plus d'adresse dans le fichier
 
 /* ---------- Module ---------- */
 function SapinScreen({ onBack }) {
