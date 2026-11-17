@@ -347,7 +347,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
    CONFIGURATION  — La Centrale PDP (Dispatch & Picking)
    ========================================================================= */
 const BRAND = "LA CENTRALE PDP";
-const APP_VERSION = "v5.47"; // v5.47 = Sapins : accueil Commande/Réception + Père Noël, inventaire obligatoire la veille avec stock PDV, alerte commande < prévu // v5.46 = jeton de session envoyé aux scripts // v5.45 = connexion sécurisée étape A : session anonyme + session ouverte par le registre (cadenas 🔒 à côté de la version) // v5.43 = sécurité : contrôle admin côté serveur, plus de liste d'adresses ni d'accès de secours dans le fichier, connexion @probon.org acceptée // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
+const APP_VERSION = "v5.48"; // v5.48 = Sapins : mails @probon.fr remis (+ @probon.org en secours) // v5.47 = Sapins : accueil Commande/Réception + Père Noël, inventaire obligatoire la veille avec stock PDV, alerte commande < prévu // v5.46 = jeton de session envoyé aux scripts // v5.45 = connexion sécurisée étape A : session anonyme + session ouverte par le registre (cadenas 🔒 à côté de la version) // v5.43 = sécurité : contrôle admin côté serveur, plus de liste d'adresses ni d'accès de secours dans le fichier, connexion @probon.org acceptée // v5.41 = Kelbongoo : la proposition ne part plus toute seule (mail à rr@ la veille) // v5.40 = Bichat commande dans la Centrale (sans prévision), magasin test master avec choix du jour // v5.39 = cœur sapins commun à jour (calendrier, déplacement de jour) // v5.38 = version affichée, URL serveur Sapins corrigée, messages d'erreur clairs // v5.37 = habillage Noël (guirlande, neige, sapin décoré), code sur 6 points, plus de liste admin affichée // v5.36 = prévision envoyée par défaut, Bichat = commande console, réception sans note // v5.35 = Kelbongoo : commande sapins réservée au master // v5.34 = réception magasin libre : attendu = ce que le chauffeur a déposé (sapins/livr) // v5.32 = v5.31 13h30 (master Google, Bichat sans proposition, pas de commande = 0, mail Rungis 2h) — numéro monté car une v5.31 antérieure est déjà en ligne
 
 // URL de la console responsable (chargement.html) — ouverte depuis la tuile Admin.
 // ⚠️ À ajuster selon le déploiement réel.
@@ -4119,14 +4119,14 @@ var SAP_STORES = [
     lines:["M80","M100","M125","M150","M175","J80","J100","J125","J150","J175","M200","J200"] },
   { k:"BIC", label:"PRIBON BICHAT", short:"Bichat", col:"BICHAT", cols:["bichat","pribon bichat","bic"], mail:"bichat@pribon.org", color:"#FF1F8E",
     lines:["M80","M100","M125","M150","M175","M200"], noProp:true }, // Morvan uniquement, PAS de proposition (pas d'historique)
-  { k:"KBG", masterCmd:true, manualCmd:true, label:"KELBONGOO", short:"Kelbongoo", col:"KELBONGOO", cols:["kelbongoo","kbg"], mail:"achat@probon.org", color:"#7C3AED",
+  { k:"KBG", masterCmd:true, manualCmd:true, label:"KELBONGOO", short:"Kelbongoo", col:"KELBONGOO", cols:["kelbongoo","kbg"], mail:"achat@probon.fr,achat@probon.org", color:"#7C3AED",
     lines:["M80","M100","M125","M150"] },                          // Morvan uniquement, sans remplacement
   // 🧪 Magasin TEST : n'existe que sur les journées de test (Console › 🎄 Sapins › 🧪 Test). Tous les mails → hg@ + rr@.
-  { k:"TST", label:"🧪 MAGASIN TEST", short:"Test", col:"TEST", cols:["test"], mail:"hg@probon.org,rr@pribon.org", color:"#455A64", test:true,
+  { k:"TST", label:"🧪 MAGASIN TEST", short:"Test", col:"TEST", cols:["test"], mail:"hg@probon.fr,hg@probon.org,rr@pribon.org", color:"#455A64", test:true,
     lines:["M80","M100","M125","M150","M175","J80","J100","J125","J150","J175","M200","J200"] }
 ];
 var SAP_MINI_DEF = { ROB:3, TOL:1, BIC:1, KBG:2, TST:3 };
-var SAP_TEST_TO = "hg@probon.org,rr@pribon.org";
+var SAP_TEST_TO = "hg@probon.fr,hg@probon.org,rr@pribon.org";
 function sapLine(k){ for (var i=0;i<SAP_LINES.length;i++) if (SAP_LINES[i].k===k) return SAP_LINES[i]; return null; }
 function sapStore(k){ for (var i=0;i<SAP_STORES.length;i++) if (SAP_STORES[i].k===k) return SAP_STORES[i]; return null; }
 function sapOther(k){ return k.charAt(0)==="M" ? "J"+k.slice(1) : "M"+k.slice(1); }   // même taille, autre gamme
